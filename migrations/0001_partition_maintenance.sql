@@ -27,6 +27,11 @@ BEGIN
             IF parent.table_name = 'quotes' THEN CONTINUE; END IF;
             RAISE EXCEPTION 'required parent missing: %.%', parent.schema_name, parent.table_name;
         END IF;
+        -- Provision DEFAULT partition to catch any out-of-range rows safely
+        EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %I.%I DEFAULT',
+            parent.schema_name, parent.table_name || '_default',
+            parent.schema_name, parent.table_name);
         boundary := date_trunc(parent.cadence, p_start AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
         WHILE boundary < p_end LOOP
             next_boundary := ((boundary AT TIME ZONE 'UTC') +
