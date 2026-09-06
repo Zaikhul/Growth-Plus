@@ -178,7 +178,11 @@ class InMemorySignalRepository:
             self._signals.append(signal)
             key = (str(signal.market_id), str(signal.horizon))
             curr = self._current.get(key)
-            if curr is None or signal.sequence >= curr.sequence:
+            if (
+                curr is None
+                or signal.cutoff_at > curr.cutoff_at
+                or (signal.cutoff_at == curr.cutoff_at and signal.sequence >= curr.sequence)
+            ):
                 self._current[key] = signal
 
     async def get_signal(self, signal_id: uuid.UUID) -> Signal | None:

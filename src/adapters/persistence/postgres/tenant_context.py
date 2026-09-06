@@ -39,3 +39,14 @@ async def tenant_transaction(
             )
             yield connection
         # Transaction-local settings have expired before connection returns to pool.
+
+
+async def set_session_tenant(session: object, verified_tenant_id: UUID) -> None:
+    """Set transaction-local app.tenant_id for Row-Level Security on an active session."""
+    execute_fn = getattr(session, "execute", None)
+    if execute_fn is not None:
+        await execute_fn(
+            text("SELECT set_config('app.tenant_id', :tenant, true)"),
+            {"tenant": str(verified_tenant_id)},
+        )
+

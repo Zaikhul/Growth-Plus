@@ -90,6 +90,9 @@ class MacroObservationModel(Base):
     __tablename__ = "observations"
     __table_args__ = (
         PrimaryKeyConstraint("record_id"),
+        UniqueConstraint(
+            "series_id", "reference_period", "revision_seq", name="uq_macro_series_revision"
+        ),
         Index("idx_macro_series_avail", "series_id", "available_at"),
         {"schema": "macro"},
     )
@@ -101,7 +104,7 @@ class MacroObservationModel(Base):
     value: Mapped[float] = mapped_column(Float, nullable=False)
     unit: Mapped[str] = mapped_column(String(32), nullable=False)
     revision_seq: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    supersedes_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    supersedes_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     raw_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     canonical_digest: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -128,6 +131,7 @@ class EtfFlowObservationModel(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     covered_funds: Mapped[int] = mapped_column(Integer, nullable=False)
     expected_funds: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision_seq: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -181,6 +185,7 @@ class SignalModel(Base):
     confidence_event: Mapped[str | None] = mapped_column(String(64), nullable=True)
     data_quality: Mapped[float] = mapped_column(Float, nullable=False)
     probabilities: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reasons: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     is_replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
@@ -198,6 +203,7 @@ class CurrentSignalModel(Base):
     horizon: Mapped[str] = mapped_column(String(32), nullable=False)
     signal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     label: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -222,7 +228,7 @@ class OutboxModel(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    dedupe_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(256), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

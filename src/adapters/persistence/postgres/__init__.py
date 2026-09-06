@@ -15,10 +15,15 @@ from src.adapters.persistence.postgres.models import (
 from src.adapters.persistence.postgres.repositories import (
     PostgresBarRepository,
     PostgresInboxRepository,
+    PostgresObservationRepository,
     PostgresOutboxRepository,
     PostgresSignalRepository,
     PostgresSnapshotRepository,
     PostgresTradeRepository,
+)
+from src.adapters.persistence.postgres.tenant_context import (
+    set_session_tenant,
+    tenant_transaction,
 )
 
 __all__ = [
@@ -33,9 +38,12 @@ __all__ = [
     "OutboxModel",
     "PostgresBarRepository",
     "PostgresInboxRepository",
+    "PostgresObservationRepository",
     "PostgresOutboxRepository",
     "PostgresSignalRepository",
     "PostgresSnapshotRepository",
     "PostgresTradeRepository",
     "SignalModel",
+    "set_session_tenant",
+    "tenant_transaction",
 ]

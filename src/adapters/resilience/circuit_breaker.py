@@ -4,6 +4,8 @@ import asyncio
 import threading
 import time
 from collections import deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -29,6 +31,7 @@ class CircuitBreakerOpenError(DomainError):
 class _Permit:
     generation: int
     probe: bool
+    acquired_at: float = 0.0
 
 
 class CircuitBreaker:
@@ -38,6 +41,7 @@ class CircuitBreaker:
         failure_threshold: int = 5,
         recovery_timeout_seconds: float = 60.0,
         half_open_success_threshold: int = 1,
+        probe_timeout_seconds: float = 30.0,
     ) -> None:
         if failure_threshold < 1 or not 60 <= recovery_timeout_seconds <= 900:
             raise ValueError("Invalid circuit policy")
@@ -47,6 +51,7 @@ class CircuitBreaker:
         self._failure_threshold = failure_threshold
         self._base_timeout = float(recovery_timeout_seconds)
         self._recovery_timeout = self._base_timeout
+        self._probe_timeout = float(probe_timeout_seconds)
         self._state = CircuitState.CLOSED
         self._consecutive_failures = 0
         self._generation = 0
@@ -75,33 +80,75 @@ class CircuitBreaker:
             self._state = CircuitState.HALF_OPEN
             self._probe_inflight = False
 
+        # DEFECT-15: Reclaim abandoned permits
+        stale_owners = [
+            owner
+            for owner, p in self._permits.items()
+            if now - p.acquired_at > (self._probe_timeout if p.probe else 120.0)
+        ]
+        for owner in stale_owners:
+            p = self._permits.pop(owner)
+            if p.probe and p.generation == self._generation:
+                # Abandoned probe should re-open circuit
+                self._open(now, failed_probe=True)
+
     @property
     def state(self) -> CircuitState:
         with self._lock:
             self._refresh(time.monotonic())
             return self._state
 
+    def _check_admissibility(self, now: float) -> tuple[bool, float]:
+        """Check if operation can be admitted. Returns (allowed, retry_after)."""
+        owner = self._owner()
+        if owner in self._permits:
+            return False, 1.0
+        if len(self._permits) >= 1024:
+            return False, 1.0
+        if self._state == CircuitState.OPEN:
+            remaining = max(0.01, self._recovery_timeout - (now - self._opened_at))
+            return False, remaining
+        probe = self._state == CircuitState.HALF_OPEN
+        if probe and self._probe_inflight:
+            return False, 1.0
+        return True, 0.0
+
     def can_execute(self) -> bool:
         """Reserve admission; each True must be paired with one result/cancel call."""
         with self._lock:
-            self._refresh(time.monotonic())
-            owner = self._owner()
-            if owner in self._permits or len(self._permits) >= 1024:
-                return False
-            if self._state == CircuitState.OPEN:
+            now = time.monotonic()
+            self._refresh(now)
+            allowed, _ = self._check_admissibility(now)
+            if not allowed:
                 return False
             probe = self._state == CircuitState.HALF_OPEN
-            if probe and self._probe_inflight:
-                return False
             self._probe_inflight = self._probe_inflight or probe
-            self._permits[owner] = _Permit(self._generation, probe)
+            self._permits[self._owner()] = _Permit(self._generation, probe, acquired_at=now)
             return True
 
     def check_permission(self) -> None:
-        if not self.can_execute():
-            with self._lock:
-                remaining = max(0.0, self._recovery_timeout - (time.monotonic() - self._opened_at))
-            raise CircuitBreakerOpenError(self._name, remaining)
+        """Reserve admission or raise CircuitBreakerOpenError (DEFECT-46)."""
+        with self._lock:
+            now = time.monotonic()
+            self._refresh(now)
+            allowed, retry_after = self._check_admissibility(now)
+            if not allowed:
+                raise CircuitBreakerOpenError(self._name, retry_after_seconds=retry_after)
+            probe = self._state == CircuitState.HALF_OPEN
+            self._probe_inflight = self._probe_inflight or probe
+            self._permits[self._owner()] = _Permit(self._generation, probe, acquired_at=now)
+
+    @asynccontextmanager
+    async def guarded(self) -> AsyncIterator[None]:
+        """Context manager ensuring permit release on completion or error (DEFECT-15)."""
+        self.check_permission()
+        try:
+            yield
+        except Exception:
+            self.record_failure()
+            raise
+        else:
+            self.record_success()
 
     def _open(self, now: float, failed_probe: bool) -> None:
         self._state = CircuitState.OPEN
