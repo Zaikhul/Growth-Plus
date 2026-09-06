@@ -1,0 +1,41 @@
+version: labels_1.0.0
+classes:
+  - UP
+  - FLAT
+  - DOWN
+
+display_labels:
+  - Strong Buy
+  - Buy
+  - Neutral
+  - Sell
+  - Strong Sell
+
+thresholds:
+  strong_buy:
+    min_prob_up: 0.75
+    min_margin_up_down: 0.40
+    min_quality_score: 0.90
+    min_agreeing_pillars: 2
+    min_reliability_lower_bound: 0.60
+  strong_sell:
+    min_prob_down: 0.75
+    min_margin_down_up: 0.40
+    min_quality_score: 0.90
+    min_agreeing_pillars: 2
+    min_reliability_lower_bound: 0.60
+  buy:
+    min_prob_up: 0.60
+    min_margin_up_down: 0.20
+    min_quality_score: 0.75
+  sell:
+    min_prob_down: 0.60
+    min_margin_down_up: 0.20
+    min_quality_score: 0.75
+  neutral:
+    min_prob_flat: 0.50
+    require_largest_class: true
+    min_quality_score: 0.75
+
+modes_eligible_for_strong:
+  - FULL

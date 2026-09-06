@@ -1,0 +1,56 @@
+# Environments & Virtualenvs
+.venv/
+env/
+venv/
+ENV/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Caches & Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.hypothesis
+htmlcov/
+
+# Distribution / Packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Data & Binary artifacts
+*.parquet
+*.ubj
+data/
+models/binaries/
+
+# Secrets & Local overrides
+.env
+.env.local
+*.pem
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Graphify
+graphify-out/
+
+# script & test
+scripts/
+tests/
+
+# markdown
+*.md
+
+# agents
+.agents/

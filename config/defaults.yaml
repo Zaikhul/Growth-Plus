@@ -1,0 +1,52 @@
+product:
+  name: Growth+
+  full_mode_enabled: false
+  execution_enabled: false
+  primary_horizon: swing_24h
+
+runtime:
+  max_feature_scalars: 192
+  external_calls_in_inference: false
+  max_event_payload_bytes: 262144
+
+sources:
+  bls:
+    enabled: true
+    endpoint: https://api.bls.gov/publicAPI/v2/timeseries/data/
+    secret_ref: growth-plus/production/providers/bls
+    max_requests_per_day: 100
+  fed_board:
+    enabled: true
+    release_index: https://www.federalreserve.gov/releases/h15/
+  gdelt:
+    enabled: true
+    endpoint: https://api.gdeltproject.org/api/v2/doc/doc
+    max_requests_per_minute: 12
+  fred:
+    enabled: false
+    reason: RIGHTS_RESTRICT_PERSISTENCE_AND_ML
+  binance_live:
+    enabled: false
+    reason: COMMERCIAL_AI_RIGHTS_NOT_VERIFIED
+  binance_history:
+    enabled: false
+    reason: COMMERCIAL_DATASET_LICENSE_REQUIRED
+  coinbase_exchange:
+    enabled: false
+    reason: WRITTEN_MARKET_DATA_AI_CONSENT_REQUIRED
+  farside:
+    enabled: false
+    reason: COMMERCIAL_RETENTION_AND_DERIVED_USE_NOT_VERIFIED
+  reddit:
+    enabled: false
+    reason: COMMERCIAL_AND_ML_PERMISSIONS_REQUIRED
+  x:
+    enabled: false
+    monthly_spend_limit_usd: 50
+    automatic_credit_recharge: false
+
+publication:
+  require_rights_check: true
+  require_calibrated_cohort: true
+  allow_unavailable_as_neutral: false
+  allow_replay_notifications: false

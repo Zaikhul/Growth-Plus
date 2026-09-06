@@ -1,0 +1,23 @@
+version: freshness_1.0.0
+hard_stops:
+  venue_trades:
+    scalp_15m_seconds: 10
+    swing_24h_seconds: 60
+    position_30d_seconds: 300
+  bars_1m:
+    watermark_seconds: 2
+  macro_cpi:
+    overdue_warn_seconds: 900
+    overdue_hard_stop_seconds: 7200
+  macro_h15:
+    overdue_warn_seconds: 7200
+    missed_releases_hard_stop: 2
+  etf_daily:
+    soft_deadline_eastern: "10:00"
+    hard_stop_eastern: "18:00"
+  gdelt:
+    poll_cadence_seconds: 900
+    warn_missed_seconds: 1800
+    hard_stop_seconds: 3600
+decay:
+  half_life_seconds: 3600

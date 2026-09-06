@@ -1,0 +1,41 @@
+version: horizons_1.0.0
+horizons:
+  scalp_15m:
+    forecast_seconds: 900
+    cadence_seconds: 60
+    ttl_seconds: 90
+    action_delay_seconds: 3
+    volatility_multiplier_k: 0.25
+    baseline_hurdle_b: 0.001
+    initial_status: RESEARCH
+    full_mode_prior:
+      macro: 0.05
+      etf: 0.05
+      news: 0.15
+      technical: 0.75
+  swing_24h:
+    forecast_seconds: 86400
+    cadence_seconds: 900
+    ttl_seconds: 1200
+    action_delay_seconds: 10
+    volatility_multiplier_k: 0.35
+    baseline_hurdle_b: 0.003
+    initial_status: PRODUCTION_CANDIDATE
+    full_mode_prior:
+      macro: 0.20
+      etf: 0.25
+      news: 0.20
+      technical: 0.35
+  position_30d:
+    forecast_seconds: 2592000
+    cadence_seconds: 14400
+    ttl_seconds: 21600
+    action_delay_seconds: 60
+    volatility_multiplier_k: 0.50
+    baseline_hurdle_b: 0.015
+    initial_status: RESEARCH
+    full_mode_prior:
+      macro: 0.30
+      etf: 0.30
+      news: 0.15
+      technical: 0.25

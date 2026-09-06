@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "growth-plus"
+version = "0.1.0"
+description = "Cryptocurrency signal intelligence backend"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "pydantic>=2.8.0",
+    "httpx>=0.27.0",
+    "nats-py>=2.8.0",
+    "sqlalchemy>=2.0.30",
+    "alembic>=1.13.0",
+    "asyncpg>=0.29.0",
+    "psycopg[binary]>=3.2.0",
+    "polars>=1.0.0",
+    "pyarrow>=17.0.0",
+    "lxml>=5.2.0",
+    "feedparser>=6.0.11",
+    "numpy>=2.0.0",
+    "scikit-learn>=1.5.0",
+    "xgboost>=2.1.0",
+    "pyyaml>=6.0.1",
+    "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "hypothesis>=6.100.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+    "types-pytz>=2024.1.0",
+    "types-PyYAML>=6.0.12",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "B008",  # do not perform function calls in argument defaults (FastAPI Depends/Query idiom)
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = [
+    "talib.*",
+    "feedparser.*",
+    "lxml.*",
+    "scipy.*",
+    "xgboost.*",
+]
+ignore_missing_imports = true
