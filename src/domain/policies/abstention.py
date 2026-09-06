@@ -34,18 +34,31 @@ HURDLE_REGISTRY: dict[HorizonId, HurdleParameters] = {
 }
 
 
+VOLATILITY_SAMPLING_SECONDS: float = 60.0
+
+
 def compute_economic_hurdle(
     horizon: HorizonId,
     cost_hurdle_log_return: float,
     trailing_volatility_estimate: float,
+    *,
+    estimate_interval_seconds: float = VOLATILITY_SAMPLING_SECONDS,
 ) -> float:
     """Compute frozen symmetric hurdle theta_{h,t} = max(c_{h,t}, k_h * sigma_hat_{h,t}, b_h).
 
     c: registered round-trip cost hurdle (log-return units)
-    sigma_hat: trailing-only horizon-volatility estimate
+    trailing_volatility_estimate: trailing-only EWMA sigma measured over
+        `estimate_interval_seconds` (default: 1-minute canonical bar).
+    sigma_hat_{h,t} is obtained by square-root-of-time scaling that estimate to the
+    horizon's forecast window (PRD 3.8). Callers that already supply a horizon-scaled
+    sigma must pass estimate_interval_seconds=horizon.forecast_seconds.
     """
+    if estimate_interval_seconds <= 0.0:
+        raise ValueError("estimate_interval_seconds must be strictly positive")
     params = HURDLE_REGISTRY[horizon]
-    vol_component = params.volatility_multiplier_k * max(0.0, trailing_volatility_estimate)
+    scale = math.sqrt(horizon.forecast_seconds / estimate_interval_seconds)
+    sigma_horizon = max(0.0, trailing_volatility_estimate) * scale
+    vol_component = params.volatility_multiplier_k * sigma_horizon
     theta = max(cost_hurdle_log_return, vol_component, params.baseline_hurdle_b)
     return theta
 

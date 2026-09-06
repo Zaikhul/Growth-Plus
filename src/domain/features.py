@@ -77,3 +77,18 @@ class FeatureSnapshot:
     def decision_cutoff(self) -> datetime:
         """Alias for cutoff_at timestamp."""
         return self.cutoff_at
+
+    @property
+    def digest(self) -> str:
+        """Deterministic cryptographic digest of snapshot contents."""
+        import hashlib
+        import json
+        payload = {
+            "market_id": self.market_id.value,
+            "horizon": self.horizon.value,
+            "cutoff_at": self.cutoff_at.isoformat(),
+            "version": self.feature_set_version,
+            "scalars": sorted(self.scalars.items()),
+        }
+        raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()[:32]

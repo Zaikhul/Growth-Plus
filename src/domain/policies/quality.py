@@ -5,7 +5,7 @@ Enforces Section 3.10:
 - System quality score: Q = sum_m (b_{m,h} * q_m) computed across all 4 full-mode priors
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from src.domain.errors import InvariantViolationError
@@ -72,3 +72,28 @@ def compute_system_quality(
         q_m = pillar_qualities[pillar].score if pillar in pillar_qualities else 0.0
         total_q += prior_weight * q_m
     return min(1.0, max(0.0, total_q))
+
+
+def compute_mask_quality(
+    horizon: HorizonId,
+    pillar_qualities: Mapping[PillarType, PillarQuality],
+    active_pillars: Iterable[PillarType],
+) -> float:
+    """Quality normalized over the pillars the active mask admits.
+
+    Q_mask = sum_{m in mask}(b_{m,h} * q_m) / sum_{m in mask}(b_{m,h})
+
+    A pillar the mask admits but which produced nothing still scores 0.0, so genuine
+    degradation inside the mask is still penalized.
+    """
+    priors = FULL_MODE_PRIORS[horizon]
+    mask = tuple(active_pillars)
+    if not mask:
+        return 0.0
+    denominator = sum(priors[p] for p in mask)
+    if denominator <= 0.0:
+        return 0.0
+    numerator = sum(
+        priors[p] * (pillar_qualities[p].score if p in pillar_qualities else 0.0) for p in mask
+    )
+    return min(1.0, max(0.0, numerator / denominator))

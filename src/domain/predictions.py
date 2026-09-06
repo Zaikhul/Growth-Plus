@@ -41,9 +41,9 @@ class ProbabilityVector:
                 )
 
         prob_sum = self.p_up + self.p_flat + self.p_down
-        if abs(prob_sum - 1.0) > 1e-4:
+        if abs(prob_sum - 1.0) > 1e-5:
             raise InvariantViolationError(
-                f"Probabilities must sum to 1.0 (+/- 1e-4), got {prob_sum:.6f}",
+                f"Probabilities must sum to 1.0 (+/- 1e-5), got {prob_sum:.6f}",
                 details={
                     "sum": prob_sum,
                     "p_up": self.p_up,

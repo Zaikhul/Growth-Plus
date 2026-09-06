@@ -89,7 +89,7 @@ def evaluate_notification_dispatch(
         conf_increase = current_signal.confidence - prior_signal.confidence
         if conf_increase >= 0.10:
             return NotificationEvaluation(
-                should_dispatch=True, reason="CONFIDENCE_INCREASE_GE_10_BPS"
+                should_dispatch=True, reason="CONFIDENCE_INCREASE_GE_0_10"
             )
 
     # Case 3: Recovery to Strong label

@@ -69,6 +69,14 @@ class TimeEnvelope:
 
         # Basic invariant: available_at cannot precede first_seen_at in live feeds
         # (For historical archives, available_at is documented by release archive timestamp)
+        if self.first_seen_at > self.available_at:
+            raise PointInTimeViolationError(
+                "first_seen_at cannot be strictly after available_at",
+                details={
+                    "first_seen_at": str(self.first_seen_at),
+                    "available_at": str(self.available_at),
+                },
+            )
         if self.valid_from and self.valid_to and self.valid_from > self.valid_to:
             raise PointInTimeViolationError(
                 "valid_from cannot be strictly after valid_to",

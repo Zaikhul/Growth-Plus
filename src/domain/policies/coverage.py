@@ -26,3 +26,25 @@ def resolve_coverage_mode(pillars: Iterable[PillarType]) -> SourceCoverageMode:
     if mask not in modes:
         raise UnsupportedSourceMaskError()
     return modes[mask]
+
+
+# Narrower masks a bundle approved for a given mode may still legitimately serve.
+_MODE_FALLBACKS: dict[SourceCoverageMode, frozenset[SourceCoverageMode]] = {
+    SourceCoverageMode.FULL: frozenset(
+        {
+            SourceCoverageMode.FULL,
+            SourceCoverageMode.CORE_NO_ETF,
+            SourceCoverageMode.TECH_MACRO,
+        }
+    ),
+    SourceCoverageMode.CORE_NO_ETF: frozenset(
+        {SourceCoverageMode.CORE_NO_ETF, SourceCoverageMode.TECH_MACRO}
+    ),
+    SourceCoverageMode.TECH_MACRO: frozenset({SourceCoverageMode.TECH_MACRO}),
+    SourceCoverageMode.RESEARCH: frozenset({SourceCoverageMode.RESEARCH}),
+}
+
+
+def mode_is_compatible(approved: SourceCoverageMode, resolved: SourceCoverageMode) -> bool:
+    """True when a bundle approved for `approved` may serve a snapshot resolved to `resolved`."""
+    return resolved in _MODE_FALLBACKS.get(approved, frozenset())
