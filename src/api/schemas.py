@@ -155,8 +155,8 @@ class NotificationSubscribeRequest(BaseModel):
     destination: str = Field(..., description="Endpoint URL, chat_id, or email address")
     markets: list[str] = Field(default_factory=lambda: ["binance:BTCUSDT", "binance:ETHUSDT"])
     horizons: list[str] = Field(default_factory=lambda: ["swing_24h", "scalp_15m"])
-    min_conviction: float = Field(default=0.60, ge=0.50, le=1.0)
-    cooldown_seconds: int = Field(default=300, ge=30)
+    min_conviction: float = Field(default=0.60, ge=0.60, le=1.0)
+    cooldown_seconds: int = Field(default=900, ge=900)
 
 
 class NotificationSubscribeResponse(BaseModel):

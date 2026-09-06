@@ -13,6 +13,19 @@ class Bucket:
     updated_at: float
 
 
+def _clean_ip(ip_str: str) -> str:
+    """Strip brackets and port suffixes from IPv4 and IPv6 string representations."""
+    s = ip_str.strip()
+    if s.startswith("[") and "]" in s:
+        # Bracketed IPv6: [2001:db8::1]:8080 -> 2001:db8::1
+        end = s.index("]")
+        return s[1:end]
+    if ":" in s and s.count(":") == 1:
+        # IPv4 with port: 192.168.1.1:8080 -> 192.168.1.1
+        return s.split(":", 1)[0]
+    return s
+
+
 class BoundedBuckets:
     def __init__(self, capacity: int, refill: float, max_clients: int = 4096) -> None:
         if capacity < 1 or not math.isfinite(refill) or refill <= 0 or max_clients < 1:
@@ -48,7 +61,7 @@ def client_identity(peer: str | None, forwarded: str | None, trusted_cidrs: Sequ
     if peer is None:
         return "unknown-peer"
     try:
-        direct = ipaddress.ip_address(peer)
+        direct = ipaddress.ip_address(_clean_ip(peer))
     except ValueError:
         return "unknown-peer"  # Shared fail-restrictive bucket, never an attacker key.
     trusted = tuple(ipaddress.ip_network(cidr, strict=True) for cidr in trusted_cidrs)
@@ -59,7 +72,21 @@ def client_identity(peer: str | None, forwarded: str | None, trusted_cidrs: Sequ
     parts = forwarded.split(",")
     if len(parts) > 16:
         raise ValueError("Too many forwarding hops")
-    chain = [ipaddress.ip_address(value.strip()) for value in parts] + [direct]
+
+    parsed_parts: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for value in parts:
+        cleaned = _clean_ip(value)
+        try:
+            parsed_parts.append(ipaddress.ip_address(cleaned))
+        except ValueError:
+            return "unknown-peer"
+
+    chain = parsed_parts + [direct]
     while len(chain) > 1 and any(chain[-1] in network for network in trusted):
         chain.pop()
-    return str(chain[-1])
+
+    # DEFECT-14: If remaining candidate is trusted, fall back to direct peer IP
+    candidate = chain[-1]
+    if any(candidate in network for network in trusted):
+        return str(direct)
+    return str(candidate)

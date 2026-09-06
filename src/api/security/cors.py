@@ -12,9 +12,11 @@ def registered_origins() -> list[str]:
     origins: list[str] = []
     for value in raw:
         url = urlsplit(value)
+        scheme = url.scheme.lower()
+        host = url.hostname.lower() if url.hostname else ""
         if (
-            url.scheme != "https"
-            or not url.hostname
+            scheme != "https"
+            or not host
             or url.username is not None
             or url.password is not None
             or url.path
@@ -26,6 +28,8 @@ def registered_origins() -> list[str]:
             raise ValueError("CORS requires exact registered HTTPS origins")
         if url.port is not None and not 1 <= url.port <= 65535:
             raise ValueError("Invalid CORS port")
-        if value not in origins:
-            origins.append(value)
+        port_suffix = f":{url.port}" if url.port is not None else ""
+        normalized = f"{scheme}://{host}{port_suffix}"
+        if normalized not in origins:
+            origins.append(normalized)
     return origins

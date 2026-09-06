@@ -44,9 +44,7 @@ class OutboxRelayWorker:
             )
             # Publish to JetStream / event bus
             await self._event_bus.publish(envelope)
+            await self._outbox_repo.mark_dispatched([event_id])
             dispatched_ids.append(event_id)
-
-        if dispatched_ids:
-            await self._outbox_repo.mark_dispatched(dispatched_ids)
 
         return len(dispatched_ids)

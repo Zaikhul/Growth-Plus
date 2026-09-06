@@ -67,8 +67,26 @@ def create_app(
     enable_rate_limiter: bool = True,
     rate_limit_capacity: int = 120,
     rate_limit_refill_rate: float = 2.0,
+    allow_ephemeral_adapters: bool = True,
 ) -> FastAPI:
     """Create and configure a production FastAPI application instance."""
+    if not allow_ephemeral_adapters:
+        missing = []
+        if signal_repo is None:
+            missing.append("signal_repo")
+        if bar_repo is None:
+            missing.append("bar_repo")
+        if obs_repo is None:
+            missing.append("obs_repo")
+        if event_bus is None:
+            missing.append("event_bus")
+        if missing:
+            msg = (
+                "Production mode forbids ephemeral in-memory adapters. Missing: "
+                f"{', '.join(missing)}"
+            )
+            raise InvariantViolationError(msg)
+
     app = FastAPI(
         title="Growth+ Signal Intelligence API",
         version="1.0.0",

@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 
 from src.domain.features import PillarType
 from src.domain.identity import HorizonId, MarketId
+from src.domain.macro import MacroReleaseCalendarEvent
+from src.domain.policies.event_windows import evaluate_event_window
 from src.domain.policies.quality import PillarQuality
 from src.domain.signals import Signal
 from src.features.asof_join import PointInTimeAsOfEngine
@@ -45,41 +47,59 @@ class FeatureSignalWorker:
         current_time: datetime | None = None,
         pillar_qualities: Mapping[PillarType, PillarQuality] | None = None,
         has_event_block: bool = False,
-        cohort_reliability_lower_95: float | None = 0.65,
+        cohort_reliability_lower_95: float | None = None,
+        macro_events: list[MacroReleaseCalendarEvent] | None = None,
     ) -> Signal:
         """Execute complete pipeline from PIT feature extraction to transactional signal commit."""
         now = current_time or datetime.now(tz=UTC)
 
         # 1. Point-in-Time Feature Extraction (available_at <= cutoff_at)
-        snapshot = await self._asof_engine.build_snapshot(
+        snapshot, measured_qualities = await self._asof_engine.build_snapshot(
             market_id=self._market_id,
             horizon=self._horizon_id,
             decision_cutoff=cutoff_at,
         )
 
-        # 2. Default high-quality assessment if none provided
-        qualities = pillar_qualities or {
-            p: PillarQuality(validity=1.0, completeness=1.0, freshness=1.0) for p in PillarType
-        }
+        # 2. Use measured qualities from AsofJoinEngine if not overridden (DEFECT-11, 28)
+        qualities = pillar_qualities if pillar_qualities is not None else measured_qualities
 
-        # 3. Model Inference and Policy Evaluation
+        # 3. Macro Event Window Evaluation (DEFECT-10(a))
+        suppress_publication = False
+        effective_has_event_block = has_event_block
+        if macro_events:
+            ev_eval = evaluate_event_window(
+                horizon=self._horizon_id,
+                decision_time=cutoff_at,
+                events=macro_events,
+            )
+            if ev_eval.is_in_blackout:
+                effective_has_event_block = True
+            if ev_eval.suppress_publication:
+                suppress_publication = True
+
+        # 4. Model Inference and Policy Evaluation
         signal = self._inference_engine.evaluate_snapshot(
             snapshot=snapshot,
             pillar_qualities=qualities,
             current_time=now,
-            has_event_block=has_event_block,
+            has_event_block=effective_has_event_block,
             cohort_reliability_lower_95=cohort_reliability_lower_95,
+            suppress_publication=suppress_publication,
         )
 
-        # 4. Commit published signal to append-only ledger
+        # 5. Commit published signal to append-only ledger
         await self._signal_repo.append_signal(signal)
 
-        # 5. Stage transactional outbox event
+        # 6. Stage transactional outbox event with deterministic dedupe_key (DEFECT-01)
         if self._outbox_repo is not None:
+            dedupe_key = (
+                f"{self._market_id.value}:{self._horizon_id.value}:"
+                f"{cutoff_at.isoformat()}:{snapshot.digest}"
+            )
             await self._outbox_repo.append_outbox(
                 event_id=uuid.uuid4(),
                 event_type="growth.signal.committed.v1",
-                dedupe_key=f"{self._market_id.value}-{signal.sequence}",
+                dedupe_key=dedupe_key,
                 payload={
                     "signal_id": str(signal.signal_id),
                     "sequence": signal.sequence,

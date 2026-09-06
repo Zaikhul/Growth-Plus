@@ -57,8 +57,15 @@ async def get_latest_signal(
             },
         )
 
-    # Compute ETag from immutable record attributes
-    etag = f'"{signal.signal_id}-{signal.sequence}"'
+    now = datetime.now(tz=UTC)
+    projected_status = (
+        SignalStatus.EXPIRED
+        if (signal.is_expired_at(now) and signal.status == SignalStatus.READY)
+        else signal.status
+    )
+
+    # Compute ETag including projected status (DEFECT-50)
+    etag = f'"{signal.signal_id}-{signal.sequence}-{projected_status.value}"'
 
     # Check for conditional cache match (HTTP 304)
     if if_none_match and if_none_match.strip() == etag:
@@ -67,15 +74,11 @@ async def get_latest_signal(
             headers={"ETag": etag, "Cache-Control": "public, max-age=5"},
         )
 
-    # Check expiration relative to tradable clock
-    now = datetime.now(tz=UTC)
-    if signal.is_expired_at(now) and signal.status == SignalStatus.READY:
-        # Note: expired signals remain historically readable, but status is EXPIRED
-        object.__setattr__(signal, "status", SignalStatus.EXPIRED)
-
     response.headers["ETag"] = etag
     response.headers["Cache-Control"] = "public, max-age=5, must-revalidate"
-    return SignalResponse.from_domain(signal)
+    resp_obj = SignalResponse.from_domain(signal)
+    resp_obj.status = projected_status.value
+    return resp_obj
 
 
 @router.get("/{signal_id}", response_model=SignalResponse)
