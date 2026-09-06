@@ -110,13 +110,12 @@ class PillarExpertModel:
         if preds.ndim == 1:
             preds = preds.reshape(1, -1)
 
-        # Handle binary or edge case where output classes < 3
-        if preds.shape[1] == 1:
-            # Expand to 3 classes
-            p_val = preds[:, 0]
-            preds = np.column_stack([(1.0 - p_val) / 2.0, (1.0 - p_val) / 2.0, p_val])
-        elif preds.shape[1] == 2:
-            preds = np.column_stack([preds[:, 0], np.zeros(len(preds)), preds[:, 1]])
+        # DEFECT-33: Reject degenerate booster outputs without inventing fake probabilities
+        if preds.shape[1] < 3:
+            raise ValueError(
+                f"Pillar expert booster produced degenerate {preds.shape[1]}-class output; "
+                "all 3 outcome classes (DOWN, FLAT, UP) must be present in training data"
+            )
 
         # Renormalize to exact sum of 1.0
         row_sums = preds.sum(axis=1, keepdims=True)
@@ -220,11 +219,12 @@ class PillarExpertTrainer:
             raise ValueError(f"Cannot train pillar expert {dataset.pillar}: dataset is empty")
 
         num_classes = 3
-        # Handle case where training sample doesn't have all 3 classes
         present_classes = set(dataset.y)
-        if len(present_classes) < 2:
-            # Fallback uniform / single-class model setup
-            pass
+        if len(present_classes) < 3:
+            raise ValueError(
+                f"Training dataset for {dataset.pillar} contains only classes {present_classes}; "
+                "all 3 outcome classes (0: DOWN, 1: FLAT, 2: UP) must be present."
+            )
 
         dtrain = xgb.DMatrix(
             dataset.X,

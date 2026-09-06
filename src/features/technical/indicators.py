@@ -94,6 +94,8 @@ class TechnicalIndicatorsEngine:
             variance = 0.0
             for r in log_returns:
                 variance = self._lambda_decay * variance + (1.0 - self._lambda_decay) * (r * r)
-            features["tech_ewma_volatility"] = float(math.sqrt(variance))
+            mass = 1.0 - (self._lambda_decay ** len(log_returns))
+            corrected_variance = variance / mass if mass > 1e-9 else variance
+            features["tech_ewma_volatility"] = float(math.sqrt(max(0.0, corrected_variance)))
 
         return features

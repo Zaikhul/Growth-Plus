@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +20,15 @@ class Fold:
 
 
 def _utc(value: datetime) -> None:
-    if value.tzinfo is None or value.utcoffset() != timedelta(0):
+    if value.tzinfo is None:
+        raise ValueError("Split timestamps must be timezone-aware UTC")
+    # Verify exact UTC identity or zero offset with UTC name
+    is_utc = (
+        value.tzinfo in (UTC, UTC)
+        or getattr(value.tzinfo, "key", None) == "UTC"
+        or value.tzinfo.tzname(None) in ("UTC", "UTC+00:00")
+    )
+    if not is_utc or value.utcoffset() != timedelta(0):
         raise ValueError("Split timestamps must be timezone-aware UTC")
 
 
@@ -30,6 +38,7 @@ def expanding_splits(
     *,
     frozen_at: datetime,
     n_splits: int = 5,
+    embargo_timedelta: timedelta = timedelta(0),
 ) -> tuple[Fold, ...]:
     _utc(frozen_at)
     if n_splits != 5 or len(cutoffs) != len(targets):
@@ -48,10 +57,15 @@ def expanding_splits(
     for fold in range(1, 6):
         start = times[boundaries[fold]]
         stop = times[boundaries[fold + 1]] if fold < 5 else None
+        purge_limit = start - embargo_timedelta
         train = tuple(
             i
             for i, (cutoff, target) in enumerate(zip(cutoffs, targets, strict=True))
-            if cutoff < start and target.exit_at < start and target.available_at < start
+            if (
+                cutoff < purge_limit
+                and target.exit_at < purge_limit
+                and target.available_at < purge_limit
+            )
         )
         validation = tuple(
             i

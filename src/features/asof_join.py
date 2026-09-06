@@ -15,6 +15,12 @@ from src.domain.features import FeatureSnapshot, PillarType
 from src.domain.identity import AssetId, HorizonId, MarketId
 from src.domain.macro import MacroSeriesId
 from src.domain.policies.coverage import resolve_coverage_mode
+from src.domain.policies.freshness import (
+    VENUE_TRADE_HARD_STOP_SECONDS,
+    calculate_freshness_decay,
+    is_market_tape_stale,
+)
+from src.domain.policies.quality import PillarQuality
 from src.domain.rights import DataOperation
 from src.domain.time import PointInTimeCutoff, ensure_utc
 from src.features.lookback import technical_window_start
@@ -50,14 +56,15 @@ class PointInTimeAsOfEngine:
         market_id: MarketId,
         horizon: HorizonId,
         decision_cutoff: datetime,
-    ) -> FeatureSnapshot:
-        """Construct an immutable feature snapshot as of decision_cutoff."""
+    ) -> tuple[FeatureSnapshot, dict[PillarType, PillarQuality]]:
+        """Construct an immutable feature snapshot and measured qualities as of cutoff."""
         cutoff_utc = ensure_utc(decision_cutoff)
         pit = PointInTimeCutoff(cutoff_at=cutoff_utc)
 
         lineage: list[uuid.UUID] = []
         scalars: dict[str, float] = {}
         active_pillars: list[PillarType] = []
+        qualities: dict[PillarType, PillarQuality] = {}
 
         # ----------------------------------------------------------------------
         # 1. Technical Pillar (Closed bars only)
@@ -75,19 +82,41 @@ class PointInTimeAsOfEngine:
             tech_feats = self._indicators.compute_features(eligible_bars)
             scalars.update(tech_feats)
             active_pillars.append(PillarType.TECHNICAL)
+            latest_bar = eligible_bars[-1]
+            is_stale = is_market_tape_stale(horizon, latest_bar.bar_close_at, cutoff_utc)
+            decay = calculate_freshness_decay(
+                last_update_at=latest_bar.bar_close_at,
+                as_of_time=cutoff_utc,
+                expected_cadence_seconds=60.0,
+                hard_stop_seconds=VENUE_TRADE_HARD_STOP_SECONDS[horizon],
+            )
+            completeness = min(1.0, len(eligible_bars) / 60.0)
+            qualities[PillarType.TECHNICAL] = PillarQuality(
+                validity=0.0 if is_stale else 1.0,
+                completeness=completeness,
+                freshness=decay.freshness_factor,
+            )
+        else:
+            qualities[PillarType.TECHNICAL] = PillarQuality(
+                validity=1.0, completeness=0.0, freshness=0.0
+            )
 
         # ----------------------------------------------------------------------
         # 2. Macroeconomic Pillar (available_at <= cutoff)
         # ----------------------------------------------------------------------
         # Check entitlement first
         auth_macro = self._authorizer.authorize("bls", "cpi", DataOperation.COMPUTE_FEATURES)
+        macro_obs_found = False
         if auth_macro.allowed:
             cpi_obs = await self._obs_repo.get_macro_observations(
                 series_id=str(MacroSeriesId.US_CPI_HEADLINE_SA),
                 as_of_time=cutoff_utc,
             )
             if cpi_obs:
-                latest_cpi, latest_cpi_env = cpi_obs[-1]
+                latest_cpi, latest_cpi_env = max(
+                    cpi_obs,
+                    key=lambda pair: (pair[1].time_envelope.available_at, pair[0].revision_seq),
+                )
                 pit.assert_available(latest_cpi_env.time_envelope.available_at)
                 lineage.append(latest_cpi_env.record_id)
                 scalars["macro_cpi_level"] = latest_cpi.value
@@ -96,19 +125,35 @@ class PointInTimeAsOfEngine:
                     and latest_cpi_env.payload["mom_pct"] is not None
                 ):
                     scalars["macro_cpi_mom_pct"] = float(latest_cpi_env.payload["mom_pct"])
+                macro_obs_found = True
 
             effr_obs = await self._obs_repo.get_macro_observations(
                 series_id=str(MacroSeriesId.US_EFFR),
                 as_of_time=cutoff_utc,
             )
             if effr_obs:
-                latest_effr, latest_effr_env = effr_obs[-1]
+                latest_effr, latest_effr_env = max(
+                    effr_obs,
+                    key=lambda pair: (pair[1].time_envelope.available_at, pair[0].revision_seq),
+                )
                 pit.assert_available(latest_effr_env.time_envelope.available_at)
                 lineage.append(latest_effr_env.record_id)
                 scalars["macro_effr_rate"] = latest_effr.value
+                macro_obs_found = True
 
-            if cpi_obs or effr_obs:
+            if macro_obs_found:
                 active_pillars.append(PillarType.MACRO)
+                qualities[PillarType.MACRO] = PillarQuality(
+                    validity=1.0, completeness=1.0, freshness=1.0
+                )
+            else:
+                qualities[PillarType.MACRO] = PillarQuality(
+                    validity=1.0, completeness=0.0, freshness=0.0
+                )
+        else:
+            qualities[PillarType.MACRO] = PillarQuality(
+                validity=0.0, completeness=0.0, freshness=0.0
+            )
 
         # ----------------------------------------------------------------------
         # 3. ETF Flow Pillar (available_at <= cutoff)
@@ -129,6 +174,19 @@ class PointInTimeAsOfEngine:
                 scalars["etf_net_flow_usd"] = latest_etf.flow_usd
                 scalars["etf_coverage_ratio"] = latest_etf.coverage_ratio
                 active_pillars.append(PillarType.ETF)
+                qualities[PillarType.ETF] = PillarQuality(
+                    validity=1.0,
+                    completeness=max(0.0, min(1.0, latest_etf.coverage_ratio)),
+                    freshness=1.0,
+                )
+            else:
+                qualities[PillarType.ETF] = PillarQuality(
+                    validity=1.0, completeness=0.0, freshness=0.0
+                )
+        else:
+            qualities[PillarType.ETF] = PillarQuality(
+                validity=0.0, completeness=0.0, freshness=0.0
+            )
 
         # ----------------------------------------------------------------------
         # 4. Mode Determination (PRD Section 3.13)
@@ -141,6 +199,17 @@ class PointInTimeAsOfEngine:
                 scalars.update(news_scalars)
                 lineage.extend(uuid.UUID(record_id) for record_id in news_lineage)
                 active_pillars.append(PillarType.NEWS)
+                qualities[PillarType.NEWS] = PillarQuality(
+                    validity=1.0, completeness=1.0, freshness=1.0
+                )
+            else:
+                qualities[PillarType.NEWS] = PillarQuality(
+                    validity=1.0, completeness=0.0, freshness=0.0
+                )
+        else:
+            qualities[PillarType.NEWS] = PillarQuality(
+                validity=1.0, completeness=0.0, freshness=0.0
+            )
 
         mode = resolve_coverage_mode(active_pillars)
 
@@ -148,7 +217,7 @@ class PointInTimeAsOfEngine:
         if now_computed < cutoff_utc:
             now_computed = cutoff_utc
 
-        return FeatureSnapshot(
+        snapshot = FeatureSnapshot(
             snapshot_id=uuid.uuid4(),
             market_id=market_id,
             horizon=horizon,
@@ -160,3 +229,4 @@ class PointInTimeAsOfEngine:
             mode=mode,
             lineage_record_ids=tuple(lineage),
         )
+        return snapshot, qualities

@@ -14,6 +14,7 @@ Enforces PRD Section 3.10:
 - Approved degraded mode masks: FULL, CORE_NO_ETF, TECH_MACRO
 """
 
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
@@ -24,6 +25,12 @@ from src.domain.errors import InvariantViolationError
 from src.domain.features import PillarType, SourceCoverageMode
 from src.domain.identity import HorizonId
 from src.domain.predictions import ProbabilityVector
+
+logger = logging.getLogger(__name__)
+
+
+class DegradedCoverageError(InvariantViolationError):
+    """Raised when the active mask cannot be served without synthesizing evidence."""
 
 # Baseline product priors from PRD Section 3.10
 BASELINE_PRIORS: dict[HorizonId, dict[PillarType, float]] = {
@@ -110,6 +117,7 @@ class LogOpinionPoolFusion:
         active_sum = sum(active_base.values())
         norm_base = {p: v / active_sum for p, v in active_base.items()}
 
+        self._fitted = learned_weights is not None
         if learned_weights is not None:
             # Validate bounds: beta in [0.5 * b, 1.5 * b]
             weights_dict: dict[PillarType, float] = {}
@@ -134,6 +142,10 @@ class LogOpinionPoolFusion:
             self._weights = norm_base
 
     @property
+    def fitted(self) -> bool:
+        return self._fitted
+
+    @property
     def horizon(self) -> HorizonId:
         return self._horizon
 
@@ -149,7 +161,7 @@ class LogOpinionPoolFusion:
     def temperature(self, value: float) -> None:
         if value <= 0.0:
             raise ValueError("Temperature must be positive")
-        self._temperature = float(value)
+        self._temperature = max(0.01, float(value))
 
     @property
     def weights(self) -> dict[PillarType, float]:
@@ -174,9 +186,10 @@ class LogOpinionPoolFusion:
 
         total = sum(raw_weights.values())
         if total <= 1e-9:
-            # Fallback: equal weighting among active pillars if all quality is zero
-            uniform = 1.0 / len(self._weights)
-            return dict.fromkeys(self._weights, uniform)
+            raise DegradedCoverageError(
+                f"Total operational weight across active pillars is {total:.2e} <= 1e-9; "
+                "cannot serve without synthesizing evidence"
+            )
 
         return {p: w / total for p, w in raw_weights.items()}
 
@@ -194,13 +207,15 @@ class LogOpinionPoolFusion:
         z = self._intercepts.copy()
 
         for pillar, w in op_weights.items():
-            if pillar in pillar_probs:
-                p_vec = pillar_probs[pillar]
-                probs_arr = np.array([p_vec.p_down, p_vec.p_flat, p_vec.p_up], dtype=np.float64)
-            else:
-                # Missing pillar defaults to uniform
-                probs_arr = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64)
-
+            if w <= 1e-9:
+                continue
+            if pillar not in pillar_probs:
+                raise DegradedCoverageError(
+                    f"Required active pillar '{pillar.value}' with weight {w:.4f} "
+                    "is missing from pillar probabilities"
+                )
+            p_vec = pillar_probs[pillar]
+            probs_arr = np.array([p_vec.p_down, p_vec.p_flat, p_vec.p_up], dtype=np.float64)
             log_p = np.log(np.maximum(probs_arr, 1e-6))
             z += w * log_p
 
@@ -276,6 +291,13 @@ class LogOpinionPoolFusion:
         if res.success:
             fitted_w = res.x / np.sum(res.x)
             self._weights = {p: float(fitted_w[i]) for i, p in enumerate(active_pillars)}
+            self._fitted = True
+        else:
+            self._fitted = False
+            logger.warning(
+                "Fusion weight optimization failed (%s). Retaining baseline weights.",
+                res.message,
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
