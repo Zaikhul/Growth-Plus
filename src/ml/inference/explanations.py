@@ -179,7 +179,8 @@ class ExplanationEngine:
                 SignalExplanationFactor(
                     code=code,
                     direction=direction,
-                    attribution_weight=abs(attr.contribution_post_temp),
+                    attribution_weight=attr.contribution_post_temp,
+                    pillar=attr.pillar.value if hasattr(attr.pillar, "value") else str(attr.pillar),
                 )
             )
 
@@ -199,7 +200,8 @@ class ExplanationEngine:
                     SignalExplanationFactor(
                         code=code,
                         direction=direction,
-                        attribution_weight=abs(opp.contribution_post_temp),
+                        attribution_weight=opp.contribution_post_temp,
+                        pillar=opp.pillar.value if hasattr(opp.pillar, "value") else str(opp.pillar),
                     )
                 )
 

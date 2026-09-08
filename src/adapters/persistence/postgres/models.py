@@ -187,6 +187,14 @@ class SignalModel(Base):
     probabilities: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reasons: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    deployment: Mapped[str] = mapped_column(String(32), default="PROMOTED", nullable=False)
+    outcome_hurdle_log_return: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    cohort_reliability: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    model_bundle: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), default="labels_1.0.0", nullable=False)
+    feature_set_version: Mapped[str] = mapped_column(String(64), default="features_1.0.0", nullable=False)
+    snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    rights_policy_version: Mapped[str] = mapped_column(String(64), default="rights_1.0.0", nullable=False)
     is_replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
@@ -249,3 +257,46 @@ class InboxModel(Base):
     consumer_name: Mapped[str] = mapped_column(String(64), nullable=False)
     event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WatchlistModel(Base):
+    """User/tenant saved market watchlists."""
+
+    __tablename__ = "watchlists"
+    __table_args__ = (
+        PrimaryKeyConstraint("id"),
+        Index("idx_watchlists_tenant", "tenant_id"),
+        {"schema": "ops"},
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    markets: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AlertRuleModel(Base):
+    """User/tenant alert rules and notification subscriptions."""
+
+    __tablename__ = "alert_rules"
+    __table_args__ = (
+        PrimaryKeyConstraint("id"),
+        Index("idx_alert_rules_tenant", "tenant_id"),
+        {"schema": "ops"},
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    markets: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    horizons: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    labels: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    min_confidence: Mapped[float] = mapped_column(Float, default=0.6, nullable=False)
+    cooldown_seconds: Mapped[int] = mapped_column(Integer, default=900, nullable=False)
+    target_channels: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    destination: Mapped[str] = mapped_column(String(2048), nullable=False)
+    destination_status: Mapped[str] = mapped_column(String(32), default="PENDING_VERIFICATION", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

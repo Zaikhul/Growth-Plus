@@ -9,7 +9,7 @@ Enforces PRD Section 4.5 & 4.6:
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 from src.domain.signals import Signal
 
@@ -20,6 +20,7 @@ class ExplanationFactorSchema(BaseModel):
     code: str
     direction: str
     attribution_weight: float = 0.0
+    pillar: str = "technical"
 
 
 class CohortReliabilitySchema(BaseModel):
@@ -49,6 +50,7 @@ class SignalResponse(BaseModel):
     horizon: str
     status: str
     mode: str
+    deployment: str = "PROMOTED"
     cutoff_at: datetime
     issued_at: datetime
     expires_at: datetime
@@ -63,6 +65,11 @@ class SignalResponse(BaseModel):
     cohort_reliability: CohortReliabilitySchema | None = None
     model_bundle: str = ""
     is_replay: bool = False
+
+    @field_serializer("sequence", when_used="json")
+    def serialize_sequence(self, v: int) -> str:
+        """Serialize sequence as a string decimal to prevent JS BigInt precision truncation."""
+        return str(v)
 
     @classmethod
     def from_domain(cls, signal: Signal) -> "SignalResponse":
@@ -90,9 +97,16 @@ class SignalResponse(BaseModel):
                 code=str(r.code),
                 direction=r.direction,
                 attribution_weight=r.attribution_weight,
+                pillar=getattr(r, "pillar", "technical"),
             )
             for r in signal.reasons
         ]
+
+        deployment_val = (
+            signal.deployment.value
+            if hasattr(signal.deployment, "value")
+            else str(getattr(signal, "deployment", "PROMOTED"))
+        )
 
         return cls(
             signal_id=signal.signal_id,
@@ -101,6 +115,7 @@ class SignalResponse(BaseModel):
             horizon=signal.horizon.value,
             status=signal.status.value,
             mode=signal.mode.value,
+            deployment=deployment_val,
             cutoff_at=signal.cutoff_at,
             issued_at=signal.issued_at,
             expires_at=signal.expires_at,

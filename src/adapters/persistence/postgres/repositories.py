@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +31,9 @@ from src.domain.market import Bar1m, Trade, TradeSide
 from src.domain.observations import ObservationEnvelope
 from src.domain.predictions import ProbabilityVector
 from src.domain.signals import (
+    CohortReliabilityInterval95,
     Signal,
+    SignalDeployment,
     SignalExplanationFactor,
     SignalLabel,
     SignalReasonCode,
@@ -420,6 +422,17 @@ def _rehydrate_signal(r: SignalModel) -> Signal:
         if r.probabilities and isinstance(r.probabilities, dict)
         else None
     )
+    cohort = (
+        CohortReliabilityInterval95(
+            lower=float(r.cohort_reliability["lower"]),
+            upper=float(r.cohort_reliability["upper"]),
+            raw_observations=int(r.cohort_reliability["raw_observations"]),
+            independent_blocks=int(r.cohort_reliability["independent_blocks"]),
+            method=str(r.cohort_reliability.get("method", "stationary_block_bootstrap")),
+        )
+        if r.cohort_reliability and isinstance(r.cohort_reliability, dict)
+        else None
+    )
     reasons_list = (
         tuple(
             SignalExplanationFactor(
@@ -428,11 +441,17 @@ def _rehydrate_signal(r: SignalModel) -> Signal:
                 else str(item.get("code", "")),
                 direction=str(item.get("direction", "FLAT")),
                 attribution_weight=float(item.get("attribution_weight", 0.0)),
+                pillar=str(item.get("pillar", "technical")),
             )
             for item in r.reasons.get("reasons", [])
         )
         if r.reasons and isinstance(r.reasons, dict)
         else ()
+    )
+    deployment_enum = (
+        SignalDeployment(r.deployment)
+        if hasattr(r, "deployment") and r.deployment in SignalDeployment.__members__.values()
+        else SignalDeployment.PROMOTED
     )
     return Signal(
         signal_id=r.signal_id,
@@ -449,10 +468,18 @@ def _rehydrate_signal(r: SignalModel) -> Signal:
         confidence=r.confidence,
         confidence_event=r.confidence_event,
         data_quality=r.data_quality,
+        outcome_hurdle_log_return=float(getattr(r, "outcome_hurdle_log_return", 0.0)),
         reason_code=SignalReasonCode(r.reason_code)
         if r.reason_code and r.reason_code in SignalReasonCode.__members__.values()
         else None,
         reasons=reasons_list,
+        cohort_reliability=cohort,
+        model_bundle=str(getattr(r, "model_bundle", "")),
+        policy_version=str(getattr(r, "policy_version", "labels_1.0.0")),
+        feature_set_version=str(getattr(r, "feature_set_version", "features_1.0.0")),
+        snapshot_id=getattr(r, "snapshot_id", None),
+        rights_policy_version=str(getattr(r, "rights_policy_version", "rights_1.0.0")),
+        deployment=deployment_enum,
         is_replay=r.is_replay,
     )
 
@@ -473,16 +500,33 @@ class PostgresSignalRepository:
             if signal.probabilities is not None
             else None
         )
+        cohort_dict = (
+            {
+                "lower": signal.cohort_reliability.lower,
+                "upper": signal.cohort_reliability.upper,
+                "raw_observations": signal.cohort_reliability.raw_observations,
+                "independent_blocks": signal.cohort_reliability.independent_blocks,
+                "method": signal.cohort_reliability.method,
+            }
+            if signal.cohort_reliability is not None
+            else None
+        )
         reasons_dict = {
             "reasons": [
                 {
                     "code": str(f.code.value if hasattr(f.code, "value") else f.code),
                     "direction": f.direction,
                     "attribution_weight": f.attribution_weight,
+                    "pillar": getattr(f, "pillar", "technical"),
                 }
                 for f in signal.reasons
             ]
         }
+        deployment_val = (
+            signal.deployment.value
+            if hasattr(signal.deployment, "value")
+            else str(getattr(signal, "deployment", "PROMOTED"))
+        )
         row = SignalModel(
             signal_id=signal.signal_id,
             sequence=signal.sequence,
@@ -500,6 +544,14 @@ class PostgresSignalRepository:
             probabilities=probs_dict,
             reason_code=signal.reason_code.value if signal.reason_code else None,
             reasons=reasons_dict,
+            deployment=deployment_val,
+            outcome_hurdle_log_return=signal.outcome_hurdle_log_return,
+            cohort_reliability=cohort_dict,
+            model_bundle=signal.model_bundle,
+            policy_version=signal.policy_version,
+            feature_set_version=signal.feature_set_version,
+            snapshot_id=signal.snapshot_id,
+            rights_policy_version=signal.rights_policy_version,
             is_replay=signal.is_replay,
         )
         self._session.add(row)
@@ -565,6 +617,7 @@ class PostgresSignalRepository:
         market_id: MarketId,
         horizon: HorizonId,
         limit: int = 100,
+        offset: int = 0,
     ) -> Sequence[Signal]:
         stmt = (
             select(SignalModel)
@@ -573,10 +626,32 @@ class PostgresSignalRepository:
                 SignalModel.horizon == horizon.value,
             )
             .order_by(desc(SignalModel.sequence))
+            .offset(offset)
             .limit(limit)
         )
         res = await self._session.execute(stmt)
         return [_rehydrate_signal(r) for r in res.scalars()]
+
+    async def count_signals(
+        self,
+        market_id: MarketId,
+        horizon: HorizonId,
+    ) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(SignalModel)
+            .where(
+                SignalModel.market_id == str(market_id),
+                SignalModel.horizon == horizon.value,
+            )
+        )
+        res = await self._session.execute(stmt)
+        return int(res.scalar_one())
+
+    async def ping(self) -> bool:
+        """Active health check probe."""
+        await self._session.execute(text("SELECT 1"))
+        return True
 
 
 class PostgresOutboxRepository:

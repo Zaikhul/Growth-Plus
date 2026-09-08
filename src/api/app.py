@@ -21,7 +21,15 @@ from src.adapters.persistence.in_memory.repositories import (
 )
 from src.adapters.rights.config_authorizer import ConfigRightsAuthorizer
 from src.api.middleware.rate_limit import RateLimitMiddleware
-from src.api.routes import health, notifications, signals, sources, stream
+from src.api.routes import (
+    alert_rules,
+    health,
+    notifications,
+    signals,
+    sources,
+    stream,
+    watchlists,
+)
 from src.api.security.cors import registered_origins
 from src.config.settings import Settings
 from src.domain.errors import (
@@ -157,12 +165,14 @@ def create_app(
     app.include_router(sources.router)
     app.include_router(notifications.router)
     app.include_router(stream.router)
+    app.include_router(alert_rules.router)
+    app.include_router(watchlists.router)
 
     # RFC 7807 Error Handlers
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
         if isinstance(exc.detail, dict):
-            return JSONResponse(status_code=exc.status_code, content=exc.detail)
+            return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=exc.headers)
         return JSONResponse(
             status_code=exc.status_code,
             content={
@@ -172,6 +182,7 @@ def create_app(
                 "detail": str(exc.detail),
                 "instance": str(request.url.path),
             },
+            headers=exc.headers,
         )
 
     @app.exception_handler(RightsViolationError)

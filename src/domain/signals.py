@@ -60,6 +60,14 @@ class SignalReasonCode(StrEnum):
     NEWS_REGULATORY_HEADWIND = "NEWS_REGULATORY_HEADWIND"
 
 
+class SignalDeployment(StrEnum):
+    """Deployment stage for the issuing model bundle."""
+
+    RESEARCH = "RESEARCH"
+    PROMOTED = "PROMOTED"
+    DISABLED = "DISABLED"
+
+
 @dataclass(frozen=True, slots=True)
 class CohortReliabilityInterval95:
     """95% block-bootstrap accuracy interval for prediction cohort (PRD Section 3.9)."""
@@ -78,6 +86,7 @@ class SignalExplanationFactor:
     code: SignalReasonCode | str
     direction: str  # "UP", "DOWN", "FLAT"
     attribution_weight: float = 0.0
+    pillar: str = "technical"
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +116,7 @@ class Signal:
     feature_set_version: str = "features_1.0.0"
     snapshot_id: uuid.UUID | None = None
     rights_policy_version: str = "rights_1.0.0"
+    deployment: SignalDeployment = SignalDeployment.PROMOTED
     is_replay: bool = False
 
     def __post_init__(self) -> None:

@@ -32,7 +32,7 @@ async def signal_event_generator(
     heartbeat_interval_seconds: float = 15.0,
     max_events: int | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Generate SSE events for newly published signals with keep-alive pings."""
+    """Generate SSE events for newly published signals with durable cursor and keep-alive pings."""
     last_signal_id: str | None = None
     events_emitted = 0
 
@@ -47,7 +47,8 @@ async def signal_event_generator(
                 if latest and str(latest.signal_id) != last_signal_id:
                     last_signal_id = str(latest.signal_id)
                     data_dict = SignalResponse.from_domain(latest).model_dump(mode="json")
-                    yield f"event: signal.published\ndata: {json.dumps(data_dict)}\n\n"
+                    cursor = f"cursor-{latest.sequence}"
+                    yield f"id: {cursor}\nevent: signal.published\ndata: {json.dumps(data_dict)}\n\n"
                     events_emitted += 1
                     if max_events is not None and events_emitted >= max_events:
                         break

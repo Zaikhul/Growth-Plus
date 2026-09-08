@@ -106,6 +106,7 @@ async def list_signals(
     market: str = Query("binance:BTCUSDT", description="Market filter"),
     horizon: str = Query("swing_24h", description="Horizon filter"),
     limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     repo: SignalRepository = Depends(get_signal_repository),
 ) -> SignalListResponse:
     """Query historical signals with pagination controls."""
@@ -123,12 +124,13 @@ async def list_signals(
             },
         ) from err
 
-    items = await repo.list_signals(market_id=m_id, horizon=h_id, limit=limit)
+    items = await repo.list_signals(market_id=m_id, horizon=h_id, limit=limit, offset=offset)
+    total = await repo.count_signals(market_id=m_id, horizon=h_id)
     responses = [SignalResponse.from_domain(s) for s in items]
 
     return SignalListResponse(
         items=responses,
-        total=len(responses),
+        total=total,
         limit=limit,
-        offset=0,
+        offset=offset,
     )

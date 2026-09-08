@@ -205,13 +205,29 @@ class InMemorySignalRepository:
         market_id: MarketId,
         horizon: HorizonId,
         limit: int = 100,
+        offset: int = 0,
     ) -> Sequence[Signal]:
         async with self._lock:
             matched = [
                 s for s in self._signals if s.market_id == market_id and s.horizon == horizon
             ]
             matched.sort(key=lambda s: s.sequence, reverse=True)
-            return matched[:limit]
+            return matched[offset : offset + limit]
+
+    async def count_signals(
+        self,
+        market_id: MarketId,
+        horizon: HorizonId,
+    ) -> int:
+        async with self._lock:
+            return sum(
+                1 for s in self._signals if s.market_id == market_id and s.horizon == horizon
+            )
+
+    async def ping(self) -> bool:
+        """Active health check probe."""
+        async with self._lock:
+            return True
 
 
 class InMemoryOutboxRepository:

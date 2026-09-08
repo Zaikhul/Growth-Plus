@@ -49,3 +49,8 @@ class InMemoryEventBus:
         if subject is None:
             return list(self._published)
         return [e for e in self._published if str(e.subject) == subject]
+
+    async def ping(self) -> bool:
+        """Active health probe for event bus."""
+        async with self._lock:
+            return True

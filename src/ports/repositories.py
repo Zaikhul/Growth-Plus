@@ -132,8 +132,17 @@ class SignalRepository(Protocol):
         market_id: MarketId,
         horizon: HorizonId,
         limit: int = 100,
+        offset: int = 0,
     ) -> Sequence[Signal]:
         """Fetch historical signals ordered by sequence descending."""
+        ...
+
+    async def count_signals(
+        self,
+        market_id: MarketId,
+        horizon: HorizonId,
+    ) -> int:
+        """Count total historical signals for a market and horizon."""
         ...
 
 
