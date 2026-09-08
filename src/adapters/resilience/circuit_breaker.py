@@ -38,20 +38,37 @@ class CircuitBreaker:
     def __init__(
         self,
         name: str,
-        failure_threshold: int = 5,
-        recovery_timeout_seconds: float = 60.0,
+        failure_threshold: int | None = None,
+        recovery_timeout_seconds: float | None = None,
         half_open_success_threshold: int = 1,
-        probe_timeout_seconds: float = 30.0,
+        probe_timeout_seconds: float | None = None,
     ) -> None:
-        if failure_threshold < 1 or not 60 <= recovery_timeout_seconds <= 900:
+        from src.config.settings import get_settings
+
+        cfg = get_settings().resilience
+        fail_thresh = (
+            failure_threshold if failure_threshold is not None else cfg.circuit_failure_threshold
+        )
+        recov_to = (
+            recovery_timeout_seconds
+            if recovery_timeout_seconds is not None
+            else cfg.circuit_recovery_timeout_seconds
+        )
+        probe_to = (
+            probe_timeout_seconds
+            if probe_timeout_seconds is not None
+            else cfg.circuit_probe_timeout_seconds
+        )
+
+        if fail_thresh < 1 or not 60 <= recov_to <= 900:
             raise ValueError("Invalid circuit policy")
         if half_open_success_threshold != 1:
             raise ValueError("PRD recovery uses one half-open probe")
         self._name = name
-        self._failure_threshold = failure_threshold
-        self._base_timeout = float(recovery_timeout_seconds)
+        self._failure_threshold = fail_thresh
+        self._base_timeout = float(recov_to)
         self._recovery_timeout = self._base_timeout
-        self._probe_timeout = float(probe_timeout_seconds)
+        self._probe_timeout = float(probe_to)
         self._state = CircuitState.CLOSED
         self._consecutive_failures = 0
         self._generation = 0
@@ -144,6 +161,9 @@ class CircuitBreaker:
         self.check_permission()
         try:
             yield
+        except asyncio.CancelledError:
+            self.record_cancelled()
+            raise
         except Exception:
             self.record_failure()
             raise

@@ -5,7 +5,7 @@ Implements ports in src/ports/repositories.py for production workloads.
 
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import desc, select, update
@@ -167,11 +167,13 @@ class PostgresBarRepository:
         as_of_time: datetime,
     ) -> Bar1m | None:
         # PRD Section 3.12: Closed bars are eligible only after bar_close_at + 2s <= as_of_time
+        as_of = ensure_utc(as_of_time)
+        effective_cutoff = as_of - timedelta(seconds=2)
         stmt = (
             select(MarketBarModel)
             .where(
                 MarketBarModel.market_id == str(market_id),
-                MarketBarModel.bar_close_at <= as_of_time,
+                MarketBarModel.bar_close_at <= effective_cutoff,
             )
             .order_by(desc(MarketBarModel.bar_close_at))
             .limit(1)
@@ -180,7 +182,7 @@ class PostgresBarRepository:
         r = res.scalar_one_or_none()
         if r is None:
             return None
-        bar = Bar1m(
+        return Bar1m(
             market_id=market_id,
             open_usd=r.open_usd,
             high_usd=r.high_usd,
@@ -191,10 +193,8 @@ class PostgresBarRepository:
             bar_close_at=r.bar_close_at,
             trade_count=r.trade_count,
             vwap_usd=r.vwap_usd,
+            is_closed=True,
         )
-        if bar.available_for_decision_at > as_of_time:
-            return None
-        return bar
 
 
 class PostgresSnapshotRepository:
@@ -332,9 +332,7 @@ class PostgresObservationRepository:
 
         s_id = str(obs.series_id.value if hasattr(obs.series_id, "value") else obs.series_id)
         src_id = str(
-            envelope.source_id.value
-            if hasattr(envelope.source_id, "value")
-            else envelope.source_id
+            envelope.source_id.value if hasattr(envelope.source_id, "value") else envelope.source_id
         )
         row = MacroObservationModel(
             record_id=envelope.record_id,

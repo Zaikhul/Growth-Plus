@@ -73,29 +73,95 @@ class TrainingPipeline:
 
         first_pillar = next(iter(datasets.keys()))
         n_samples = len(datasets[first_pillar].X)
+        cutoffs = datasets[first_pillar].cutoffs
         for p, ds in datasets.items():
             if len(ds.X) != n_samples:
                 raise InvariantViolationError(
                     f"Sample count mismatch: {p} has {len(ds.X)} rows, expected {n_samples}"
                 )
+            if len(ds.cutoffs) != n_samples or ds.cutoffs != cutoffs:
+                raise InvariantViolationError(
+                    f"Cutoffs mismatch for pillar {p}: cutoffs must be strictly aligned"
+                )
+
+        if not targets:
+            raise InvariantViolationError("Training pipeline requires non-empty targets")
+        if len(targets) != n_samples:
+            raise InvariantViolationError(
+                f"Targets count mismatch: got {len(targets)} targets for {n_samples} samples"
+            )
+
+        # Enforce chronological ordering (DEFECT-02 / T02)
+        for i in range(len(cutoffs) - 1):
+            if cutoffs[i] > cutoffs[i + 1]:
+                raise InvariantViolationError(
+                    "Temporal order violation: training cutoffs must be strictly non-decreasing"
+                )
+
+        # Enforce target clocks validity and UTC
+        for cutoff, target in zip(cutoffs, targets, strict=True):
+            for instant in (cutoff, target.entry_at, target.exit_at, target.available_at):
+                if instant.tzinfo is None or instant.utcoffset() != timedelta(0):
+                    raise InvariantViolationError("Split timestamps must be timezone-aware UTC")
+            if not (cutoff <= target.entry_at < target.exit_at <= target.available_at <= now):
+                msg = (
+                    f"Invalid or unmatured training target clock: cutoff={cutoff}, "
+                    f"entry={target.entry_at}, exit={target.exit_at}, "
+                    f"available={target.available_at}, frozen_at={now}"
+                )
+                raise InvariantViolationError(msg)
 
         if n_samples < 15:
             raise InvariantViolationError(
-                f"Insufficient samples for 3-way disjoint partition: got {n_samples}, need >= 15"
+                f"Insufficient samples for 4-way purged partition: got {n_samples}, need >= 15"
             )
 
         # ------------------------------------------------------------------
-        # 1. Split into 3 disjoint chronological folds (DEFECT-36)
+        # 1. Split into disjoint chronological folds with target interval purging
         # ------------------------------------------------------------------
-        # Partition 1 (60%): Expert training
-        # Partition 2 (20%): Fusion weight fitting
-        # Partition 3 (20%): Untouched temperature calibration & ECE gate
-        n_train = int(n_samples * 0.60)
+        # Partition 1 (~50%): Expert training (idx_train)
+        # Partition 2 (~20%): Fusion weight fitting (idx_fusion)
+        # Partition 3 (~15%): Temperature calibration fitting (idx_calib)
+        # Partition 4 (~15%): Untouched holdout evaluation & ECE gate (idx_eval)
+        n_train = int(n_samples * 0.50)
         n_fusion = int(n_samples * 0.20)
+        n_calib = int(n_samples * 0.15)
 
-        idx_train = np.arange(0, n_train)
-        idx_fusion = np.arange(n_train, n_train + n_fusion)
-        idx_calib = np.arange(n_train + n_fusion, n_samples)
+        idx_train_raw = np.arange(0, n_train)
+        idx_fusion_raw = np.arange(n_train, n_train + n_fusion)
+        idx_calib_raw = np.arange(n_train + n_fusion, n_train + n_fusion + n_calib)
+        idx_eval = np.arange(n_train + n_fusion + n_calib, n_samples)
+
+        fusion_start = cutoffs[n_train]
+        calib_start = cutoffs[n_train + n_fusion]
+        eval_start = cutoffs[n_train + n_fusion + n_calib]
+
+        # Purge boundaries: target exit and availability must precede next era start
+        purged_train = [
+            int(i)
+            for i in idx_train_raw
+            if (
+                targets[int(i)].exit_at < fusion_start
+                and targets[int(i)].available_at < fusion_start
+            )
+        ]
+        idx_train = np.array(purged_train if purged_train else idx_train_raw)
+
+        purged_fusion = [
+            int(i)
+            for i in idx_fusion_raw
+            if (
+                targets[int(i)].exit_at < calib_start and targets[int(i)].available_at < calib_start
+            )
+        ]
+        idx_fusion = np.array(purged_fusion if purged_fusion else idx_fusion_raw)
+
+        purged_calib = [
+            int(i)
+            for i in idx_calib_raw
+            if (targets[int(i)].exit_at < eval_start and targets[int(i)].available_at < eval_start)
+        ]
+        idx_calib = np.array(purged_calib if purged_calib else idx_calib_raw)
 
         # ------------------------------------------------------------------
         # 2. Train pillar experts on Partition 1
@@ -128,7 +194,7 @@ class TrainingPipeline:
         fusion.fit_weights(oof_pillar_probs=fusion_preds, y_true=y_fusion)
 
         # ------------------------------------------------------------------
-        # 4. Untouched temperature calibration on Partition 3 (DEFECT-07, DEFECT-36)
+        # 4. Temperature calibration fitting on Partition 3 (DEFECT-07, DEFECT-36)
         # ------------------------------------------------------------------
         calib_preds: dict[PillarType, np.ndarray] = {}
         for pillar, model in pillar_models.items():
@@ -156,9 +222,32 @@ class TrainingPipeline:
         calibrator.fit(logits_arr, y_calib)
         fusion.temperature = calibrator.temperature
 
-        # Evaluate holdout calibration metrics
-        calibrated_probs = calibrator.predict_proba(logits_arr)
-        metrics = compute_multiclass_ece(calibrated_probs, y_calib)
+        # ------------------------------------------------------------------
+        # 5. Evaluate holdout calibration metrics strictly on isolated Partition 4 (T02)
+        # ------------------------------------------------------------------
+        eval_preds: dict[PillarType, np.ndarray] = {}
+        for pillar, model in pillar_models.items():
+            eval_preds[pillar] = model.predict_proba(datasets[pillar].X[idx_eval])
+
+        y_eval = datasets[first_pillar].y[idx_eval]
+
+        eval_logits: list[np.ndarray] = []
+        for i in range(len(idx_eval)):
+            pillar_probs_i = {
+                p: ProbabilityVector(
+                    p_up=float(eval_preds[p][i, 2]),
+                    p_flat=float(eval_preds[p][i, 1]),
+                    p_down=float(eval_preds[p][i, 0]),
+                )
+                for p in pillar_models
+            }
+            quality_factors = dict.fromkeys(pillar_models, 1.0)
+            z_i, _ = fusion.compute_fusion_logits(pillar_probs_i, quality_factors)
+            eval_logits.append(z_i)
+
+        eval_logits_arr = np.array(eval_logits, dtype=np.float64)
+        calibrated_eval_probs = calibrator.predict_proba(eval_logits_arr)
+        metrics = compute_multiclass_ece(calibrated_eval_probs, y_eval)
         is_calibrated = metrics.ece <= ece_gate
 
         if strict_gate and not is_calibrated:
@@ -167,7 +256,7 @@ class TrainingPipeline:
             )
 
         # ------------------------------------------------------------------
-        # 5. Build and optionally sign ModelBundle
+        # 6. Build and optionally sign ModelBundle
         # ------------------------------------------------------------------
         header = ModelBundleHeader(
             bundle_id=f"bundle_{horizon.value}_{mode.value}_{uuid.uuid4().hex[:8]}",

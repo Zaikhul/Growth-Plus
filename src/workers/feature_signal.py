@@ -19,7 +19,8 @@ from src.domain.policies.quality import PillarQuality
 from src.domain.signals import Signal
 from src.features.asof_join import PointInTimeAsOfEngine
 from src.ml.inference.engine import InferenceEngine
-from src.ports.repositories import OutboxRepository, SignalRepository
+from src.ports.repositories import OutboxRepository, SignalRepository, SnapshotRepository
+from src.ports.unit_of_work import UnitOfWork
 
 
 class FeatureSignalWorker:
@@ -33,6 +34,8 @@ class FeatureSignalWorker:
         inference_engine: InferenceEngine,
         signal_repo: SignalRepository,
         outbox_repo: OutboxRepository | None = None,
+        snapshot_repo: SnapshotRepository | None = None,
+        uow: UnitOfWork | None = None,
     ) -> None:
         self._market_id = market_id
         self._horizon_id = horizon_id
@@ -40,6 +43,8 @@ class FeatureSignalWorker:
         self._inference_engine = inference_engine
         self._signal_repo = signal_repo
         self._outbox_repo = outbox_repo
+        self._snapshot_repo = snapshot_repo
+        self._uow = uow
 
     async def evaluate_decision_slot(
         self,
@@ -87,30 +92,57 @@ class FeatureSignalWorker:
             suppress_publication=suppress_publication,
         )
 
-        # 5. Commit published signal to append-only ledger
-        await self._signal_repo.append_signal(signal)
-
-        # 6. Stage transactional outbox event with deterministic dedupe_key (DEFECT-01)
-        if self._outbox_repo is not None:
-            dedupe_key = (
-                f"{self._market_id.value}:{self._horizon_id.value}:"
-                f"{cutoff_at.isoformat()}:{snapshot.digest}"
-            )
-            await self._outbox_repo.append_outbox(
-                event_id=uuid.uuid4(),
-                event_type="growth.signal.committed.v1",
-                dedupe_key=dedupe_key,
-                payload={
-                    "signal_id": str(signal.signal_id),
-                    "sequence": signal.sequence,
-                    "market_id": signal.market_id.value,
-                    "horizon": signal.horizon.value,
-                    "status": signal.status.value,
-                    "label": signal.label.value if signal.label else None,
-                    "confidence": signal.confidence,
-                    "issued_at": signal.issued_at.isoformat(),
-                    "expires_at": signal.expires_at.isoformat(),
-                },
-            )
+        # 5. Persist snapshot, signal, and outbox atomically (A05)
+        if self._uow is not None:
+            async with self._uow:
+                await self._uow.snapshots.append_snapshot(snapshot)
+                await self._uow.signals.append_signal(signal)
+                if self._uow.outbox is not None:
+                    dedupe_key = (
+                        f"{self._market_id.value}:{self._horizon_id.value}:"
+                        f"{cutoff_at.isoformat()}:{snapshot.digest}"
+                    )
+                    await self._uow.outbox.append_outbox(
+                        event_id=uuid.uuid4(),
+                        event_type="growth.signal.committed.v1",
+                        dedupe_key=dedupe_key,
+                        payload={
+                            "signal_id": str(signal.signal_id),
+                            "sequence": signal.sequence,
+                            "market_id": signal.market_id.value,
+                            "horizon": signal.horizon.value,
+                            "status": signal.status.value,
+                            "label": signal.label.value if signal.label else None,
+                            "confidence": signal.confidence,
+                            "issued_at": signal.issued_at.isoformat(),
+                            "expires_at": signal.expires_at.isoformat(),
+                        },
+                    )
+                await self._uow.commit()
+        else:
+            if self._snapshot_repo is not None:
+                await self._snapshot_repo.append_snapshot(snapshot)
+            await self._signal_repo.append_signal(signal)
+            if self._outbox_repo is not None:
+                dedupe_key = (
+                    f"{self._market_id.value}:{self._horizon_id.value}:"
+                    f"{cutoff_at.isoformat()}:{snapshot.digest}"
+                )
+                await self._outbox_repo.append_outbox(
+                    event_id=uuid.uuid4(),
+                    event_type="growth.signal.committed.v1",
+                    dedupe_key=dedupe_key,
+                    payload={
+                        "signal_id": str(signal.signal_id),
+                        "sequence": signal.sequence,
+                        "market_id": signal.market_id.value,
+                        "horizon": signal.horizon.value,
+                        "status": signal.status.value,
+                        "label": signal.label.value if signal.label else None,
+                        "confidence": signal.confidence,
+                        "issued_at": signal.issued_at.isoformat(),
+                        "expires_at": signal.expires_at.isoformat(),
+                    },
+                )
 
         return signal

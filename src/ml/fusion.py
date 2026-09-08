@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 class DegradedCoverageError(InvariantViolationError):
     """Raised when the active mask cannot be served without synthesizing evidence."""
 
+
 # Baseline product priors from PRD Section 3.10
 BASELINE_PRIORS: dict[HorizonId, dict[PillarType, float]] = {
     HorizonId.SCALP_15M: {

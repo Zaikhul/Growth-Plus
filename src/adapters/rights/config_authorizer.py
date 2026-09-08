@@ -34,11 +34,14 @@ class ConfigRightsAuthorizer:
         self._disabled_reasons: dict[str, str] = dict(disabled_reasons or {})
 
     @classmethod
-    def from_yaml_file(
-        cls, config_path: str | Path = "config/defaults.yaml"
-    ) -> "ConfigRightsAuthorizer":
+    def from_yaml_file(cls, config_path: str | Path | None = None) -> "ConfigRightsAuthorizer":
         """Load source flags and build authorizer from YAML config file."""
-        path = Path(config_path)
+        if config_path is None:
+            from src.config.settings import get_settings
+
+            path = get_settings().app.config_path
+        else:
+            path = Path(config_path)
         if not path.exists():
             return cls()
 

@@ -4,7 +4,7 @@ import json
 import math
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
@@ -30,17 +30,35 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app: ASGIApp,
-        capacity: int = 30,
-        refill_rate_per_second: float = 1.0,
-        max_clients: int = 4096,
+        capacity: int | None = None,
+        refill_rate_per_second: float | None = None,
+        max_clients: int | None = None,
+        trusted_proxy_cidrs: Sequence[str] | None = None,
     ) -> None:
         super().__init__(app)
-        self._capacity = capacity
-        self._store = BoundedBuckets(capacity, refill_rate_per_second, max_clients)
-        raw = json.loads(os.environ.get("GROWTH_TRUSTED_PROXY_CIDRS_JSON", "[]"))
-        if not isinstance(raw, list) or any(not isinstance(value, str) for value in raw):
-            raise ValueError("Trusted proxy networks must be a JSON string array")
-        self._trusted = tuple(raw)
+        from src.config.settings import get_settings
+
+        cfg = get_settings()
+        self._capacity = capacity if capacity is not None else cfg.app.rate_limit_capacity
+        refill = (
+            refill_rate_per_second
+            if refill_rate_per_second is not None
+            else cfg.app.rate_limit_refill_rate
+        )
+        clients = max_clients if max_clients is not None else cfg.app.rate_limit_max_clients
+
+        self._store = BoundedBuckets(self._capacity, refill, clients)
+
+        if trusted_proxy_cidrs is not None:
+            self._trusted = tuple(trusted_proxy_cidrs)
+        elif "GROWTH_TRUSTED_PROXY_CIDRS_JSON" in os.environ:
+            raw = json.loads(os.environ["GROWTH_TRUSTED_PROXY_CIDRS_JSON"])
+            if not isinstance(raw, list) or any(not isinstance(value, str) for value in raw):
+                raise ValueError("Trusted proxy networks must be a JSON string array")
+            self._trusted = tuple(raw)
+        else:
+            self._trusted = tuple(cfg.security.trusted_proxy_cidrs)
+
         # Validate configured networks even before a proxied request arrives.
         import ipaddress
 

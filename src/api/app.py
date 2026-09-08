@@ -23,6 +23,7 @@ from src.adapters.rights.config_authorizer import ConfigRightsAuthorizer
 from src.api.middleware.rate_limit import RateLimitMiddleware
 from src.api.routes import health, notifications, signals, sources, stream
 from src.api.security.cors import registered_origins
+from src.config.settings import Settings
 from src.domain.errors import (
     InvariantViolationError,
     PointInTimeViolationError,
@@ -38,6 +39,12 @@ from src.ports.rights_authorizer import RightsAuthorizer
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialize persistence, event bus, and policy engines on startup."""
+    from src.config.settings import get_settings
+
+    if not hasattr(app.state, "settings"):
+        app.state.settings = get_settings()
+    cfg = app.state.settings
+
     # Initialize default in-memory adapters for service delivery
     # In production, these are wired to PostgreSQL and NATS JetStream
     if not hasattr(app.state, "signal_repository"):
@@ -49,7 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not hasattr(app.state, "event_bus"):
         app.state.event_bus = InMemoryEventBus()
     if not hasattr(app.state, "rights_authorizer"):
-        app.state.rights_authorizer = ConfigRightsAuthorizer.from_yaml_file()
+        app.state.rights_authorizer = ConfigRightsAuthorizer.from_yaml_file(cfg.app.config_path)
 
     yield
 
@@ -64,13 +71,23 @@ def create_app(
     obs_repo: ObservationRepository | None = None,
     event_bus: EventBus | None = None,
     rights_authorizer: RightsAuthorizer | None = None,
-    enable_rate_limiter: bool = True,
-    rate_limit_capacity: int = 120,
-    rate_limit_refill_rate: float = 2.0,
-    allow_ephemeral_adapters: bool = True,
+    settings: Settings | None = None,
+    enable_rate_limiter: bool | None = None,
+    rate_limit_capacity: int | None = None,
+    rate_limit_refill_rate: float | None = None,
+    allow_ephemeral_adapters: bool | None = None,
 ) -> FastAPI:
     """Create and configure a production FastAPI application instance."""
-    if not allow_ephemeral_adapters:
+    from src.config.settings import get_settings
+
+    cfg = settings or get_settings()
+
+    ephemeral = (
+        allow_ephemeral_adapters
+        if allow_ephemeral_adapters is not None
+        else cfg.app.allow_ephemeral_adapters
+    )
+    if not ephemeral:
         missing = []
         if signal_repo is None:
             missing.append("signal_repo")
@@ -95,27 +112,43 @@ def create_app(
     )
 
     # Dependency injection on application state
+    app.state.settings = cfg
     app.state.signal_repository = signal_repo or InMemorySignalRepository()
     app.state.bar_repository = bar_repo or InMemoryBarRepository()
     app.state.observation_repository = obs_repo or InMemoryObservationRepository()
     app.state.event_bus = event_bus or InMemoryEventBus()
-    app.state.rights_authorizer = rights_authorizer or ConfigRightsAuthorizer.from_yaml_file()
+    app.state.rights_authorizer = rights_authorizer or ConfigRightsAuthorizer.from_yaml_file(
+        cfg.app.config_path
+    )
 
     # CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=registered_origins(),
+        allow_origins=registered_origins(cfg),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
     # Rate limiting
-    if enable_rate_limiter:
+    use_limiter = (
+        enable_rate_limiter if enable_rate_limiter is not None else cfg.app.rate_limit_enabled
+    )
+    if use_limiter:
+        cap = (
+            rate_limit_capacity if rate_limit_capacity is not None else cfg.app.rate_limit_capacity
+        )
+        refill = (
+            rate_limit_refill_rate
+            if rate_limit_refill_rate is not None
+            else cfg.app.rate_limit_refill_rate
+        )
         app.add_middleware(
             RateLimitMiddleware,
-            capacity=rate_limit_capacity,
-            refill_rate_per_second=rate_limit_refill_rate,
+            capacity=cap,
+            refill_rate_per_second=refill,
+            max_clients=cfg.app.rate_limit_max_clients,
+            trusted_proxy_cidrs=cfg.security.trusted_proxy_cidrs,
         )
 
     # Routes

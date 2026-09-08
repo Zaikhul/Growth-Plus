@@ -14,11 +14,11 @@ from datetime import datetime, timedelta
 from src.domain.errors import InvariantViolationError
 from src.domain.features import FeatureSnapshot, PillarType
 from src.domain.identity import HorizonId
+from src.domain.policies.abstention import compute_economic_hurdle
 from src.domain.policies.classification import ClassificationContext, evaluate_classification
-from src.domain.policies.coverage import mode_is_compatible
 from src.domain.policies.quality import (
     PillarQuality,
-    compute_mask_quality,
+    compute_system_quality,
 )
 from src.domain.predictions import PillarPrediction
 from src.domain.signals import (
@@ -69,9 +69,11 @@ class InferenceEngine:
         has_event_block: bool = False,
         incident_flag: bool = False,
         cohort_reliability_lower_95: float | None = None,
+        cohort_reliability: CohortReliabilityInterval95 | None = None,
         is_cohort_calibrated: bool = True,
         is_replay: bool = False,
         cost_hurdle: float = 0.0005,
+        economic_hurdle: float | None = None,
         suppress_publication: bool = False,
         sequence: int | None = None,
     ) -> Signal:
@@ -82,6 +84,9 @@ class InferenceEngine:
         ttl = SIGNAL_TTL_REGISTRY.get(horizon, timedelta(minutes=20))
         expires_at = cutoff_utc + ttl
         seq = sequence if sequence is not None else self.next_sequence()
+
+        if cohort_reliability is not None and cohort_reliability_lower_95 is None:
+            cohort_reliability_lower_95 = cohort_reliability.lower
 
         # Check bundle expiration
         if self._bundle.is_expired_at(now_utc):
@@ -102,9 +107,9 @@ class InferenceEngine:
                 is_replay=is_replay,
             )
 
-        # Check mode compatibility (DEFECT-04)
+        # Check exact mode compatibility (I02 / DEFECT-04)
         mode = snapshot.mode
-        if not mode_is_compatible(self._bundle.mode, mode):
+        if self._bundle.mode != mode:
             return Signal(
                 signal_id=uuid.uuid4(),
                 sequence=seq,
@@ -122,11 +127,10 @@ class InferenceEngine:
                 is_replay=is_replay,
             )
 
-        # Compute mask-level quality score Q_mask (DEFECT-13)
-        q_mask = compute_mask_quality(
+        # Compute true system quality score Q (I02 / DEFECT-13)
+        q_system = compute_system_quality(
             horizon=horizon,
             pillar_qualities=pillar_qualities,
-            active_pillars=snapshot.active_pillars,
         )
         quality_factors = {p: q.score for p, q in pillar_qualities.items()}
 
@@ -151,11 +155,11 @@ class InferenceEngine:
                 market_id=snapshot.market_id,
                 horizon=horizon,
                 status=SignalStatus.UNAVAILABLE,
-                mode=self._bundle.mode,
+                mode=mode,
                 cutoff_at=cutoff_utc,
                 issued_at=now_utc,
                 expires_at=expires_at,
-                data_quality=q_mask,
+                data_quality=q_system,
                 reason_code=SignalReasonCode.UNSUPPORTED_SOURCE_MASK,
                 model_bundle=self._bundle.bundle_id,
                 snapshot_id=snapshot.snapshot_id,
@@ -180,8 +184,8 @@ class InferenceEngine:
         # Evaluate against the 6-tier classification policy (DEFECT-10(b), DEFECT-13)
         ctx = ClassificationContext(
             probabilities=fused_probs,
-            quality_score=q_mask,
-            mode=self._bundle.mode,
+            quality_score=q_system,
+            mode=mode,
             pillar_predictions=tuple(pillar_preds.values()),
             cohort_reliability_lower_95=cohort_reliability_lower_95,
             has_event_block=has_event_block or incident_flag,
@@ -190,15 +194,19 @@ class InferenceEngine:
         )
         class_res = evaluate_classification(ctx)
 
-        # Reliability interval metadata if provided (DEFECT-09)
-        reliability_interval: CohortReliabilityInterval95 | None = None
-        if cohort_reliability_lower_95 is not None:
-            reliability_interval = CohortReliabilityInterval95(
-                lower=cohort_reliability_lower_95,
-                upper=min(1.0, cohort_reliability_lower_95 + 0.15),
-                raw_observations=250,
-                independent_blocks=60,
+        # Calculate dynamic economic hurdle theta (T05)
+        if economic_hurdle is not None:
+            theta = economic_hurdle
+        else:
+            trailing_vol = float(snapshot.scalars.get("tech_ewma_volatility", 0.0))
+            theta = compute_economic_hurdle(
+                horizon=horizon,
+                cost_hurdle_log_return=cost_hurdle,
+                trailing_volatility_estimate=trailing_vol,
             )
+
+        # Only retain genuine cohort execution artifacts; never fabricate sample counts (T05)
+        reliability_interval: CohortReliabilityInterval95 | None = cohort_reliability
 
         return Signal(
             signal_id=uuid.uuid4(),
@@ -206,7 +214,7 @@ class InferenceEngine:
             market_id=snapshot.market_id,
             horizon=horizon,
             status=class_res.status,
-            mode=self._bundle.mode,
+            mode=mode,
             cutoff_at=cutoff_utc,
             issued_at=now_utc,
             expires_at=expires_at,
@@ -214,8 +222,8 @@ class InferenceEngine:
             label=class_res.label,
             confidence=class_res.confidence,
             confidence_event=class_res.confidence_event,
-            data_quality=q_mask,
-            outcome_hurdle_log_return=cost_hurdle,
+            data_quality=q_system,
+            outcome_hurdle_log_return=theta,
             reason_code=class_res.reason_code,
             reasons=factors,
             cohort_reliability=reliability_interval,

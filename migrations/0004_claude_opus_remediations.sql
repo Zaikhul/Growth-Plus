@@ -5,8 +5,14 @@
 ALTER TABLE macro.observations
     ALTER COLUMN supersedes_id TYPE uuid USING supersedes_id::uuid;
 
-ALTER TABLE macro.observations
-    ADD CONSTRAINT uq_macro_series_revision UNIQUE (series_id, reference_period, revision_seq);
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_macro_series_revision'
+    ) THEN
+        ALTER TABLE macro.observations
+            ADD CONSTRAINT uq_macro_series_revision UNIQUE (series_id, reference_period, revision_seq);
+    END IF;
+END $$;
 
 -- 2. ETF observation revision sequencing
 ALTER TABLE flows.etf_observations

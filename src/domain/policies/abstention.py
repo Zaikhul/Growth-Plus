@@ -75,7 +75,7 @@ def classify_realized_outcome(
     FLAT otherwise
     """
     if entry_price_usd <= 0.0 or exit_price_usd <= 0.0:
-        return OutcomeClass.FLAT
+        raise ValueError("Prices must be strictly positive")
 
     log_return = math.log(exit_price_usd / entry_price_usd)
     if log_return > hurdle_theta:

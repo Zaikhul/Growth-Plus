@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
+from src.domain.identity import MarketId
+
 D = Decimal
 Asset = Literal["BTC", "ETH"]
 Side = Literal["BUY", "SELL"]
@@ -55,6 +57,7 @@ class Quote:
     preceding_minute_notional: Decimal
     book_id: str
     rights_allowed: bool = True
+    market_id: MarketId | str | None = None
 
     def __post_init__(self) -> None:
         for instant in (self.observed_at, self.available_at):
@@ -67,6 +70,11 @@ class Quote:
             raise ValueError("Invalid quote clock/spread")
         if self.asset not in ("BTC", "ETH") or not self.book_id:
             raise ValueError("Invalid asset/book identity")
+        if self.market_id is not None:
+            if isinstance(self.market_id, str):
+                MarketId(self.market_id)
+            elif not isinstance(self.market_id, MarketId):
+                raise ValueError("Invalid market_id type")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +84,7 @@ class Signal:
     issued_at: datetime
     expires_at: datetime
     unavailable: bool = False
+    market_id: MarketId | str | None = None
 
     def __post_init__(self) -> None:
         if self.asset not in ("BTC", "ETH") or self.label not in (
@@ -92,6 +101,11 @@ class Signal:
                 raise ValueError("Signal timestamps require UTC")
         if self.expires_at <= self.issued_at:
             raise ValueError("Invalid signal validity interval")
+        if self.market_id is not None:
+            if isinstance(self.market_id, str):
+                MarketId(self.market_id)
+            elif not isinstance(self.market_id, MarketId):
+                raise ValueError("Invalid market_id type")
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +117,7 @@ class Fill:
     price: Decimal
     fee: Decimal
     book_id: str
+    market_id: MarketId | str | None = None
 
 
 @dataclass(slots=True)
@@ -140,12 +155,17 @@ class PaperReport:
     assumptions: tuple[str, ...]
     pending_orders: int
     valuation_ages_seconds: tuple[tuple[str, float], ...]
+    market_id: str | None = None
+    quote_currency: str = "USD"
 
 
 @dataclass
 class PaperSimulator:
     horizon: str
     costs: CostPolicy = field(default_factory=CostPolicy)
+    market_id: MarketId | str | None = None
+    quote_currency: str | None = None
+    market_universe: tuple[str, ...] | None = None
     cash: Decimal = field(init=False, default=D("100000"))
     positions: dict[Asset, Position] = field(init=False, default_factory=dict)
     orders: dict[Asset, Order] = field(init=False, default_factory=dict)
@@ -160,6 +180,19 @@ class PaperSimulator:
     def __post_init__(self) -> None:
         if self.horizon not in HORIZONS:
             raise ValueError("Unsupported paper horizon")
+        if self.market_id is not None:
+            if isinstance(self.market_id, str):
+                self.market_id = MarketId(self.market_id)
+            elif not isinstance(self.market_id, MarketId):
+                raise ValueError("Invalid market_id type")
+            m_str = self.market_id.value
+            if self.market_universe is None:
+                self.market_universe = (m_str,)
+            if self.quote_currency is None:
+                is_usdt = m_str.endswith("USDT") or ":USDT" in m_str
+                self.quote_currency = "USDT" if is_usdt else "USD"
+        elif self.quote_currency is None:
+            self.quote_currency = "USD"
 
     def equity(self) -> Decimal | None:
         if any(asset in self.denied or asset not in self.quotes for asset in self.positions):
@@ -181,6 +214,68 @@ class PaperSimulator:
             return
         self.orders[asset] = Order(asset, "SELL", eligible, None, remaining=position.quantity)
 
+    def _validate_market_isolation(
+        self,
+        quotes: tuple[Quote, ...],
+        signals: tuple[Signal, ...],
+    ) -> None:
+        quote_markets = {
+            (q.market_id.value if isinstance(q.market_id, MarketId) else str(q.market_id))
+            for q in quotes
+            if q.market_id is not None
+        }
+        signal_markets = {
+            (s.market_id.value if isinstance(s.market_id, MarketId) else str(s.market_id))
+            for s in signals
+            if s.market_id is not None
+        }
+        sim_market = (
+            (self.market_id.value if isinstance(self.market_id, MarketId) else str(self.market_id))
+            if self.market_id is not None
+            else None
+        )
+
+        if sim_market is not None:
+            allowed = set(self.market_universe) if self.market_universe else {sim_market}
+            for qm in quote_markets:
+                if qm not in allowed:
+                    raise ValueError(
+                        f"Cross-venue or mismatched market execution rejected: quote '{qm}' "
+                        f"not in {allowed}"
+                    )
+            for sm in signal_markets:
+                if sm not in allowed:
+                    raise ValueError(
+                        f"Cross-venue or mismatched market execution rejected: signal '{sm}' "
+                        f"not in {allowed}"
+                    )
+
+        if len(quote_markets) > 1 and self.market_universe is None:
+            raise ValueError(
+                "Cross-venue or mismatched market execution rejected: mixed quote markets in step"
+            )
+
+        if quote_markets and signal_markets and self.market_universe is None:
+            if not quote_markets.issubset(signal_markets) and not signal_markets.issubset(
+                quote_markets
+            ):
+                raise ValueError(
+                    "Cross-venue or mismatched market execution rejected: "
+                    "quote and signal markets mismatch"
+                )
+
+        for qm in quote_markets:
+            if (qm.endswith("USDT") or ":USDT" in qm) and self.quote_currency == "USD":
+                raise ValueError(
+                    f"Cross-quote currency rejected: quote in USDT but account is "
+                    f"{self.quote_currency}"
+                )
+            if (qm.endswith("-USD") or qm.endswith(":USD")) and self.quote_currency == "USDT":
+                raise ValueError(
+                    f"Cross-quote currency rejected: quote in USD but account is "
+                    f"{self.quote_currency}"
+                )
+
     def step(
         self,
         at: datetime,
@@ -196,6 +291,7 @@ class PaperSimulator:
                 "Frames must have strictly increasing times; batch simultaneous events"
             )
         self.previous_at = at
+        self._validate_market_isolation(quotes, signals)
         hold_seconds, delay = HORIZONS[self.horizon]
         delay += self.costs.extra_delay_seconds
         for asset in rights_denied:
@@ -297,7 +393,16 @@ class PaperSimulator:
             self.used_books[book_key] = self.used_books.get(book_key, D("0")) + quantity
             self.recent_fills.append((at, asset, notional))
             self.fills.append(
-                Fill(asset, order.side, at, quantity, price, fee, target_quote.book_id)
+                Fill(
+                    asset,
+                    order.side,
+                    at,
+                    quantity,
+                    price,
+                    fee,
+                    target_quote.book_id,
+                    target_quote.market_id or self.market_id,
+                )
             )
             if order.side == "BUY":
                 self.cash -= notional + fee
@@ -343,6 +448,7 @@ class PaperSimulator:
                 "Quotes/decisions must carry PIT-verified rights and availability",
                 "Terminal open positions are marked at latest entitled observable bid; report gaps",
                 "Primary defaults are simulation fixtures, not current venue fee quotations",
+                "Venue and quote currency isolation enforced; cross-market mixing rejected",
             ),
             len(self.orders),
             tuple(
@@ -350,4 +456,6 @@ class PaperSimulator:
                 for asset, quote in sorted(self.quotes.items())
                 if self.previous_at is not None
             ),
+            market_id=str(self.market_id) if self.market_id else None,
+            quote_currency=self.quote_currency or "USD",
         )

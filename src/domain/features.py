@@ -83,6 +83,7 @@ class FeatureSnapshot:
         """Deterministic cryptographic digest of snapshot contents."""
         import hashlib
         import json
+
         payload = {
             "market_id": self.market_id.value,
             "horizon": self.horizon.value,

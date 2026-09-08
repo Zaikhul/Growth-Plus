@@ -151,8 +151,14 @@ class SourcesStatusResponse(BaseModel):
 class NotificationSubscribeRequest(BaseModel):
     """Subscription configuration for notification alerts."""
 
-    target: str = Field(..., description="Channel: webhook, telegram, email")
-    destination: str = Field(..., description="Endpoint URL, chat_id, or email address")
+    target: str = Field(
+        ...,
+        pattern=r"^(webhook|telegram|email)$",
+        description="Channel: webhook, telegram, email",
+    )
+    destination: str = Field(
+        ..., min_length=3, description="Endpoint URL, chat_id, or email address"
+    )
     markets: list[str] = Field(default_factory=lambda: ["binance:BTCUSDT", "binance:ETHUSDT"])
     horizons: list[str] = Field(default_factory=lambda: ["swing_24h", "scalp_15m"])
     min_conviction: float = Field(default=0.60, ge=0.60, le=1.0)
@@ -165,5 +171,21 @@ class NotificationSubscribeResponse(BaseModel):
     subscription_id: uuid.UUID
     target: str
     destination: str
-    status: str = "ACTIVE"
+    status: str = "PENDING_VERIFICATION"
+    challenge_token: str | None = None
     created_at: datetime
+
+
+class NotificationVerifyRequest(BaseModel):
+    """Payload to verify ownership challenge and activate subscription."""
+
+    subscription_id: uuid.UUID
+    challenge_token: str = Field(..., min_length=8)
+
+
+class NotificationVerifyResponse(BaseModel):
+    """Confirmation of verified and activated subscription."""
+
+    subscription_id: uuid.UUID
+    status: str = "ACTIVE"
+    verified_at: datetime

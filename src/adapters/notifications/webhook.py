@@ -88,8 +88,32 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
-def deliver(url: str, body: bytes, secret: bytes, delivery_id: str, timestamp: int) -> int:
-    if not secret or len(body) > 262144 or timestamp < 0:
+def deliver(
+    url: str,
+    body: bytes,
+    secret: bytes,
+    delivery_id: str,
+    timestamp: int,
+    max_payload_bytes: int | None = None,
+    connect_timeout: float | None = None,
+    max_response_bytes: int | None = None,
+    max_redirects: int | None = None,
+) -> int:
+    from src.config.settings import get_settings
+
+    cfg = get_settings().external
+    max_payload = (
+        max_payload_bytes if max_payload_bytes is not None else cfg.webhook_max_payload_bytes
+    )
+    conn_to = (
+        connect_timeout if connect_timeout is not None else cfg.webhook_connect_timeout_seconds
+    )
+    max_resp = (
+        max_response_bytes if max_response_bytes is not None else cfg.webhook_max_response_bytes
+    )
+    max_redir = max_redirects if max_redirects is not None else cfg.webhook_max_redirects
+
+    if not secret or len(body) > max_payload or timestamp < 0:
         raise ValueError("Invalid webhook signing input or payload")
     if (
         not delivery_id
@@ -100,12 +124,15 @@ def deliver(url: str, body: bytes, secret: bytes, delivery_id: str, timestamp: i
     original = validate_destination(url)
     signature = hmac.new(secret, str(timestamp).encode() + b"." + body, hashlib.sha256).hexdigest()
     current = url
-    for redirect in range(4):
+    for redirect in range(max_redir):
         destination = validate_destination(current)
         if (destination.host, destination.port) != (original.host, original.port):
             raise ValueError("Cross-origin webhook redirects are not permitted")
         connection = PinnedHTTPSConnection(
-            destination.host, destination.port, timeout=3, context=ssl.create_default_context()
+            destination.host,
+            destination.port,
+            timeout=conn_to,
+            context=ssl.create_default_context(),
         )
         try:
             connection.request(
@@ -120,11 +147,11 @@ def deliver(url: str, body: bytes, secret: bytes, delivery_id: str, timestamp: i
                 },
             )
             response = connection.getresponse()
-            if len(response.read(65537)) > 65536:
+            if len(response.read(max_resp + 1)) > max_resp:
                 raise ValueError("Oversized webhook response")
             if response.status in (307, 308):
                 location = response.getheader("Location")
-                if redirect == 3 or not location:
+                if redirect == max_redir - 1 or not location:
                     raise ValueError("Webhook redirect limit or missing destination")
                 current = urljoin(current, location)
                 continue

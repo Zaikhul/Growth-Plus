@@ -27,11 +27,6 @@ BEGIN
             IF parent.table_name = 'quotes' THEN CONTINUE; END IF;
             RAISE EXCEPTION 'required parent missing: %.%', parent.schema_name, parent.table_name;
         END IF;
-        -- Provision DEFAULT partition to catch any out-of-range rows safely
-        EXECUTE format(
-            'CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %I.%I DEFAULT',
-            parent.schema_name, parent.table_name || '_default',
-            parent.schema_name, parent.table_name);
         boundary := date_trunc(parent.cadence, p_start AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
         WHILE boundary < p_end LOOP
             next_boundary := ((boundary AT TIME ZONE 'UTC') +
@@ -39,10 +34,28 @@ BEGIN
                 ELSE interval '1 month' END) AT TIME ZONE 'UTC';
             suffix := to_char(boundary AT TIME ZONE 'UTC',
                 CASE parent.cadence WHEN 'day' THEN 'YYYYMMDD' ELSE 'YYYYMM' END);
-            EXECUTE format(
-                'CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %I.%I FOR VALUES FROM (%L) TO (%L)',
-                parent.schema_name, parent.table_name || '_' || suffix,
-                parent.schema_name, parent.table_name, boundary, next_boundary);
+
+            -- If default partition already exists, detach temporarily to permit safe range creation
+            IF to_regclass(format('%I.%I', parent.schema_name, parent.table_name || '_default')) IS NOT NULL THEN
+                EXECUTE format(
+                    'ALTER TABLE %I.%I DETACH PARTITION %I.%I',
+                    parent.schema_name, parent.table_name,
+                    parent.schema_name, parent.table_name || '_default');
+                EXECUTE format(
+                    'CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %I.%I FOR VALUES FROM (%L) TO (%L)',
+                    parent.schema_name, parent.table_name || '_' || suffix,
+                    parent.schema_name, parent.table_name, boundary, next_boundary);
+                EXECUTE format(
+                    'ALTER TABLE %I.%I ATTACH PARTITION %I.%I DEFAULT',
+                    parent.schema_name, parent.table_name,
+                    parent.schema_name, parent.table_name || '_default');
+            ELSE
+                EXECUTE format(
+                    'CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %I.%I FOR VALUES FROM (%L) TO (%L)',
+                    parent.schema_name, parent.table_name || '_' || suffix,
+                    parent.schema_name, parent.table_name, boundary, next_boundary);
+            END IF;
+
             IF NOT EXISTS (
                 SELECT 1 FROM pg_inherits
                 WHERE inhparent = to_regclass(format('%I.%I', parent.schema_name, parent.table_name))
@@ -53,6 +66,12 @@ BEGIN
             END IF;
             boundary := next_boundary;
         END LOOP;
+
+        -- Ensure DEFAULT partition exists after explicit range provisioning
+        EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %I.%I DEFAULT',
+            parent.schema_name, parent.table_name || '_default',
+            parent.schema_name, parent.table_name);
     END LOOP;
 END $$;
 REVOKE ALL ON FUNCTION ops.ensure_partitions(timestamptz,timestamptz) FROM PUBLIC;

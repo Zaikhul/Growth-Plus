@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from uuid import UUID
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 
 @asynccontextmanager
@@ -41,12 +41,23 @@ async def tenant_transaction(
         # Transaction-local settings have expired before connection returns to pool.
 
 
-async def set_session_tenant(session: object, verified_tenant_id: UUID) -> None:
-    """Set transaction-local app.tenant_id for Row-Level Security on an active session."""
-    execute_fn = getattr(session, "execute", None)
-    if execute_fn is not None:
-        await execute_fn(
-            text("SELECT set_config('app.tenant_id', :tenant, true)"),
-            {"tenant": str(verified_tenant_id)},
-        )
+async def set_session_tenant(
+    session: AsyncSession | AsyncConnection | object,
+    verified_tenant_id: UUID,
+) -> None:
+    """Set transaction-local app.tenant_id for Row-Level Security on an active session.
 
+    Enforces that an active transaction is present so context does not leak across pooled sessions.
+    """
+    execute_fn = getattr(session, "execute", None)
+    if execute_fn is None:
+        raise TypeError("Session or connection must support async execute")
+
+    is_active = getattr(session, "in_transaction", lambda: True)
+    if callable(is_active) and not is_active():
+        raise RuntimeError("Active database transaction required to bind tenant context")
+
+    await execute_fn(
+        text("SELECT set_config('app.tenant_id', :tenant, true)"),
+        {"tenant": str(verified_tenant_id)},
+    )

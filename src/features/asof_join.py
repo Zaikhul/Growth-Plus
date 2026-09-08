@@ -76,7 +76,9 @@ class PointInTimeAsOfEngine:
             end_time=cutoff_utc,
         )
         # Filter strictly closed bars eligible at cutoff
-        eligible_bars = [b for b in bars if b.available_for_decision_at <= cutoff_utc]
+        eligible_bars = [
+            b for b in bars if b.is_closed and b.available_for_decision_at <= cutoff_utc
+        ]
 
         if eligible_bars:
             tech_feats = self._indicators.compute_features(eligible_bars)
@@ -184,9 +186,7 @@ class PointInTimeAsOfEngine:
                     validity=1.0, completeness=0.0, freshness=0.0
                 )
         else:
-            qualities[PillarType.ETF] = PillarQuality(
-                validity=0.0, completeness=0.0, freshness=0.0
-            )
+            qualities[PillarType.ETF] = PillarQuality(validity=0.0, completeness=0.0, freshness=0.0)
 
         # ----------------------------------------------------------------------
         # 4. Mode Determination (PRD Section 3.13)

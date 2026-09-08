@@ -18,7 +18,13 @@ from src.ml.bundle import ModelBundle
 class SignedModelVerifier:
     """Verifies authenticity, integrity, expiration, and compatibility of ModelBundles."""
 
-    def __init__(self, secret_key: bytes) -> None:
+    def __init__(self, secret_key: bytes | None = None) -> None:
+        if secret_key is None:
+            from src.config.settings import get_settings
+
+            key_setting = get_settings().security.model_verification_secret_key
+            if key_setting is not None:
+                secret_key = key_setting.get_secret_value().encode("utf-8")
         if not secret_key:
             raise SecurityError("Model verification secret key cannot be empty")
         self._secret_key = secret_key
