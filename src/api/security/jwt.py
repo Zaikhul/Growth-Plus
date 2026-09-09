@@ -22,6 +22,9 @@ def _b64_url_decode(segment: str) -> bytes:
     return base64.urlsafe_b64decode((segment + padding).encode("ascii"))
 
 
+ALLOWED_ROLES = frozenset({"subscriber", "admin", "analyst"})
+
+
 def create_access_token(
     tenant_id: uuid.UUID | str,
     user_id: str | None = None,
@@ -34,16 +37,19 @@ def create_access_token(
 ) -> str:
     """Issue a cryptographically signed HS256 JWT for a verified tenant."""
     if secret is None:
-        try:
-            from src.config.settings import get_settings
-            jwt_sec = get_settings().security.jwt_secret
-            secret = (
-                jwt_sec.get_secret_value()
-                if jwt_sec
-                else "insecure-development-jwt-secret-replace-in-production-min-32-chars"
+        from src.config.settings import get_settings
+
+        jwt_sec = get_settings().security.jwt_secret
+        if not jwt_sec:
+            raise RuntimeError(
+                "Mandatory JWT secret is not configured; cannot issue token without secret"
             )
-        except Exception:
-            secret = "insecure-development-jwt-secret-replace-in-production-min-32-chars"
+        secret = jwt_sec.get_secret_value()
+
+    # Validate roles shape and membership
+    for r in roles:
+        if r not in ALLOWED_ROLES:
+            raise ValueError(f"Invalid role '{r}'. Permitted roles: {sorted(ALLOWED_ROLES)}")
 
     now = int(datetime.now(tz=UTC).timestamp())
     header = {"alg": "HS256", "typ": "JWT"}
@@ -78,6 +84,9 @@ def verify_access_token(
     Raises:
         ValueError: If token format, signature, expiration, or claims are invalid.
     """
+    if not secret:
+        raise ValueError("Cannot verify token: secret must not be empty")
+
     parts = token.strip().split(".")
     if len(parts) != 3:
         raise ValueError("Malformed JWT token: must contain exactly three segments")
@@ -107,12 +116,12 @@ def verify_access_token(
     except Exception as exc:
         raise ValueError("Invalid JWT payload encoding") from exc
 
-    # 4. Expiration check
+    # 4. Expiration check (half-open: now >= exp is expired)
     now = int(datetime.now(tz=UTC).timestamp())
     exp = payload.get("exp")
     if exp is None or not isinstance(exp, (int, float)):
         raise ValueError("Missing or invalid 'exp' expiration claim")
-    if now > exp:
+    if now >= exp:
         raise ValueError("Token has expired")
 
     # 5. Issued-at check (allow 60s clock skew)
@@ -140,4 +149,14 @@ def verify_access_token(
     except ValueError as exc:
         raise ValueError(f"Invalid UUID in tenant claim: '{tenant_str}'") from exc
 
-    return payload
+    # 8. Validate roles shape and membership
+    raw_roles = payload.get("roles", ["subscriber"])
+    if not isinstance(raw_roles, list) or not all(isinstance(r, str) for r in raw_roles):
+        raise ValueError("Malformed 'roles' claim: must be a list of strings")
+    for r in raw_roles:
+        if r not in ALLOWED_ROLES:
+            raise ValueError(f"Invalid role '{r}' in claims")
+
+    from typing import cast
+
+    return cast(dict[str, Any], payload)

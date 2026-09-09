@@ -216,6 +216,7 @@ class PostgresSnapshotRepository:
             scalars=dict(snapshot.scalars),
             active_pillars={"pillars": [p.value for p in snapshot.active_pillars]},
             mode=snapshot.mode.value,
+            lineage_record_ids=[str(lid) for lid in snapshot.lineage_record_ids],
         )
         self._session.add(row)
         await self._session.flush()
@@ -226,6 +227,9 @@ class PostgresSnapshotRepository:
         r = res.scalar_one_or_none()
         if r is None:
             return None
+        lineage_ids = tuple(
+            uuid.UUID(str(lid)) for lid in getattr(r, "lineage_record_ids", []) or []
+        )
         return FeatureSnapshot(
             snapshot_id=r.snapshot_id,
             market_id=MarketId(r.market_id),
@@ -236,6 +240,7 @@ class PostgresSnapshotRepository:
             scalars=r.scalars,
             active_pillars=tuple(PillarType(p) for p in r.active_pillars.get("pillars", [])),
             mode=SourceCoverageMode(r.mode),
+            lineage_record_ids=lineage_ids,
         )
 
 
@@ -248,14 +253,15 @@ def _to_macro_pair(r: MacroObservationModel) -> tuple[MacroObservation, Observat
         unit=r.unit,
         revision_seq=r.revision_seq,
         supersedes_id=str(r.supersedes_id) if r.supersedes_id else None,
+        is_seasonally_adjusted=getattr(r, "is_seasonally_adjusted", False),
     )
     env = ObservationEnvelope(
         record_id=r.record_id,
         source_id=SourceId(r.source_id),
         dataset_id=DatasetId("macro_indicators"),
-        source_record_key=f"{r.series_id}:{r.reference_period}",
-        schema_version="macro_v1",
-        parser_version="parser_v1",
+        source_record_key=getattr(r, "source_record_key", f"{r.series_id}:{r.reference_period}"),
+        schema_version=getattr(r, "schema_version", "macro_v1"),
+        parser_version=getattr(r, "parser_version", "parser_v1"),
         time_envelope=TimeEnvelope(
             event_time=r.available_at,
             reference_period=r.reference_period,
@@ -264,8 +270,8 @@ def _to_macro_pair(r: MacroObservationModel) -> tuple[MacroObservation, Observat
         ),
         raw_digest=r.raw_digest,
         canonical_digest=r.canonical_digest,
-        rights_policy_id="rights_public",
-        rights_version="v1",
+        rights_policy_id=getattr(r, "rights_policy_id", "rights_public"),
+        rights_version=getattr(r, "rights_version", "v1"),
         revision_seq=r.revision_seq,
         supersedes_id=r.supersedes_id,
     )
@@ -276,9 +282,9 @@ def _to_etf_pair(r: EtfFlowObservationModel) -> tuple[EtfFlowObservation, Observ
     flow = EtfFlowObservation(
         asset_id=AssetId(r.asset_id),
         fund_id=r.fund_id,
-        ticker_at_time=r.fund_id,
-        issuer="",
-        jurisdiction="US",
+        ticker_at_time=getattr(r, "ticker_at_time", r.fund_id) or r.fund_id,
+        issuer=getattr(r, "issuer", "") or "",
+        jurisdiction=getattr(r, "jurisdiction", "US") or "US",
         session_date=r.session_date,
         flow_usd=r.flow_usd,
         status=EtfProductStatus(r.status)
@@ -286,25 +292,38 @@ def _to_etf_pair(r: EtfFlowObservationModel) -> tuple[EtfFlowObservation, Observ
         else EtfProductStatus.PRELIMINARY,
         covered_funds=r.covered_funds,
         expected_funds=r.expected_funds,
+        is_seed_or_conversion=getattr(r, "is_seed_or_conversion", False),
         revision_seq=r.revision_seq,
     )
+    raw_digest = getattr(r, "raw_digest", "na") or "na"
+    canonical_digest = getattr(r, "canonical_digest", "na") or "na"
+    source_id_str = getattr(r, "source_id", "farside") or "farside"
+    source_record_key = (
+        getattr(r, "source_record_key", f"{r.asset_id}:{r.fund_id}:{r.session_date}")
+        or f"{r.asset_id}:{r.fund_id}:{r.session_date}"
+    )
+    schema_version = getattr(r, "schema_version", "flows_v1") or "flows_v1"
+    parser_version = getattr(r, "parser_version", "parser_v1") or "parser_v1"
+    rights_policy_id = getattr(r, "rights_policy_id", "rights_licensed") or "rights_licensed"
+    rights_version = getattr(r, "rights_version", "v1") or "v1"
+
     env = ObservationEnvelope(
         record_id=r.record_id,
-        source_id=SourceId("farside"),
+        source_id=SourceId(source_id_str),
         dataset_id=DatasetId("etf_flows"),
-        source_record_key=f"{r.asset_id}:{r.fund_id}:{r.session_date}",
-        schema_version="flows_v1",
-        parser_version="parser_v1",
+        source_record_key=source_record_key,
+        schema_version=schema_version,
+        parser_version=parser_version,
         time_envelope=TimeEnvelope(
             event_time=r.available_at,
             reference_period=str(r.session_date),
             first_seen_at=r.available_at,
             available_at=r.available_at,
         ),
-        raw_digest="na",
-        canonical_digest="na",
-        rights_policy_id="rights_licensed",
-        rights_version="v1",
+        raw_digest=raw_digest,
+        canonical_digest=canonical_digest,
+        rights_policy_id=rights_policy_id,
+        rights_version=rights_version,
         revision_seq=r.revision_seq,
     )
     return flow, env
@@ -350,6 +369,12 @@ class PostgresObservationRepository:
             available_at=envelope.time_envelope.available_at,
             raw_digest=envelope.raw_digest,
             canonical_digest=envelope.canonical_digest,
+            is_seasonally_adjusted=obs.is_seasonally_adjusted,
+            source_record_key=envelope.source_record_key,
+            schema_version=envelope.schema_version,
+            parser_version=envelope.parser_version,
+            rights_policy_id=envelope.rights_policy_id,
+            rights_version=envelope.rights_version,
         )
         self._session.add(row)
         await self._session.flush()
@@ -375,17 +400,32 @@ class PostgresObservationRepository:
     async def append_etf_flow(
         self, flow: EtfFlowObservation, envelope: ObservationEnvelope
     ) -> None:
+        src_id = str(
+            envelope.source_id.value if hasattr(envelope.source_id, "value") else envelope.source_id
+        )
         row = EtfFlowObservationModel(
             record_id=envelope.record_id,
             asset_id=str(flow.asset_id.value if hasattr(flow.asset_id, "value") else flow.asset_id),
             fund_id=flow.fund_id,
+            ticker_at_time=flow.ticker_at_time,
+            issuer=flow.issuer,
+            jurisdiction=flow.jurisdiction,
             session_date=flow.session_date,
             flow_usd=flow.flow_usd,
             status=str(flow.status.value if hasattr(flow.status, "value") else flow.status),
             covered_funds=flow.covered_funds,
             expected_funds=flow.expected_funds,
+            is_seed_or_conversion=flow.is_seed_or_conversion,
             revision_seq=flow.revision_seq,
             available_at=envelope.time_envelope.available_at,
+            raw_digest=envelope.raw_digest,
+            canonical_digest=envelope.canonical_digest,
+            source_id=src_id,
+            source_record_key=envelope.source_record_key,
+            schema_version=envelope.schema_version,
+            parser_version=envelope.parser_version,
+            rights_policy_id=envelope.rights_policy_id,
+            rights_version=envelope.rights_version,
         )
         self._session.add(row)
         await self._session.flush()
@@ -581,7 +621,13 @@ class PostgresSignalRepository:
                     "label": signal.label.value if signal.label else None,
                     "status": signal.status.value,
                 },
-                where=(CurrentSignalModel.cutoff_at < signal.cutoff_at),
+                where=(
+                    (CurrentSignalModel.cutoff_at < signal.cutoff_at)
+                    | (
+                        (CurrentSignalModel.cutoff_at == signal.cutoff_at)
+                        & (CurrentSignalModel.sequence <= signal.sequence)
+                    )
+                ),
             )
         )
         await self._session.execute(current_stmt)

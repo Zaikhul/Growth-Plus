@@ -26,13 +26,17 @@ class PillarType(StrEnum):
     NEWS = "news"
 
 
-class SourceCoverageMode(StrEnum):
+class CoverageMode(StrEnum):
     """Approved source coverage modes (PRD Section 3.13)."""
 
     FULL = "FULL"  # All 4 pillars active
     CORE_NO_ETF = "CORE_NO_ETF"  # Technical, Macro, News
     TECH_MACRO = "TECH_MACRO"  # Technical and Macro only
     RESEARCH = "RESEARCH"  # Unvalidated or exploratory masks
+
+
+# Canonical backward-compatibility alias
+SourceCoverageMode = CoverageMode
 
 
 MAX_FEATURE_SCALARS = 192

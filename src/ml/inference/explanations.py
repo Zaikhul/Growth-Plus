@@ -201,7 +201,9 @@ class ExplanationEngine:
                         code=code,
                         direction=direction,
                         attribution_weight=opp.contribution_post_temp,
-                        pillar=opp.pillar.value if hasattr(opp.pillar, "value") else str(opp.pillar),
+                        pillar=(
+                            opp.pillar.value if hasattr(opp.pillar, "value") else str(opp.pillar)
+                        ),
                     )
                 )
 

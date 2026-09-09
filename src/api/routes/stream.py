@@ -48,7 +48,8 @@ async def signal_event_generator(
                     last_signal_id = str(latest.signal_id)
                     data_dict = SignalResponse.from_domain(latest).model_dump(mode="json")
                     cursor = f"cursor-{latest.sequence}"
-                    yield f"id: {cursor}\nevent: signal.published\ndata: {json.dumps(data_dict)}\n\n"
+                    payload = json.dumps(data_dict)
+                    yield f"id: {cursor}\nevent: signal.published\ndata: {payload}\n\n"
                     events_emitted += 1
                     if max_events is not None and events_emitted >= max_events:
                         break
@@ -61,10 +62,15 @@ async def signal_event_generator(
             if max_events is not None and events_emitted >= max_events:
                 break
 
+            if await request.is_disconnected():
+                break
+
             # Sleep with disconnect cancellation check
             await asyncio.sleep(heartbeat_interval_seconds)
+            if await request.is_disconnected():
+                break
     except asyncio.CancelledError:
-        return
+        raise
 
 
 @router.get("/signals")

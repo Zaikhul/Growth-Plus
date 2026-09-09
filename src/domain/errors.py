@@ -60,3 +60,10 @@ class SecurityError(DomainError):
 
     def __init__(self, message: str, details: Mapping[str, Any] | None = None) -> None:
         super().__init__(message=message, code="SECURITY_VIOLATION", details=details)
+
+
+class EmptyPartitionError(DomainError):
+    """Raised when an empirical cross-validation or purging partition contains zero samples."""
+
+    def __init__(self, message: str, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="EMPTY_PARTITION_ERROR", details=details)

@@ -9,7 +9,7 @@ Enforces PRD Section 4.5 & 4.6:
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
 from src.domain.signals import Signal
 
@@ -40,6 +40,16 @@ class ProbabilityVectorSchema(BaseModel):
     p_flat: float
     p_down: float
 
+    @model_validator(mode="after")
+    def validate_probabilities(self) -> "ProbabilityVectorSchema":
+        for name, val in [("p_up", self.p_up), ("p_flat", self.p_flat), ("p_down", self.p_down)]:
+            if val < 0.0 or val > 1.0:
+                raise ValueError(f"{name} must be in [0.0, 1.0]")
+        prob_sum = self.p_up + self.p_flat + self.p_down
+        if abs(prob_sum - 1.0) > 1e-5:
+            raise ValueError(f"Probabilities must sum to 1.0, got {prob_sum}")
+        return self
+
 
 class SignalResponse(BaseModel):
     """User-facing signal response matching PRD Section 4.6 contract."""
@@ -64,6 +74,11 @@ class SignalResponse(BaseModel):
     reasons: list[ExplanationFactorSchema] = Field(default_factory=list)
     cohort_reliability: CohortReliabilitySchema | None = None
     model_bundle: str = ""
+    model_bundle_id: str = ""
+    policy_version: str = "labels_1.0.0"
+    feature_set_version: str = "features_1.0.0"
+    snapshot_id: uuid.UUID | None = None
+    rights_policy_version: str = "rights_1.0.0"
     is_replay: bool = False
 
     @field_serializer("sequence", when_used="json")
@@ -108,6 +123,8 @@ class SignalResponse(BaseModel):
             else str(getattr(signal, "deployment", "PROMOTED"))
         )
 
+        model_bundle = getattr(signal, "model_bundle", "")
+
         return cls(
             signal_id=signal.signal_id,
             sequence=signal.sequence,
@@ -128,7 +145,12 @@ class SignalResponse(BaseModel):
             reason_code=signal.reason_code.value if signal.reason_code else None,
             reasons=reasons,
             cohort_reliability=reliability_schema,
-            model_bundle=signal.model_bundle,
+            model_bundle=model_bundle,
+            model_bundle_id=model_bundle,
+            policy_version=getattr(signal, "policy_version", "labels_1.0.0"),
+            feature_set_version=getattr(signal, "feature_set_version", "features_1.0.0"),
+            snapshot_id=getattr(signal, "snapshot_id", None),
+            rights_policy_version=getattr(signal, "rights_policy_version", "rights_1.0.0"),
             is_replay=signal.is_replay,
         )
 

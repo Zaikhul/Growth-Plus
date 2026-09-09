@@ -1,5 +1,6 @@
 """Notification rule registration and verification endpoints."""
 
+import hashlib
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -18,8 +19,6 @@ from src.api.schemas import (
 
 router = APIRouter(prefix="/v1/notifications", tags=["Notifications"])
 
-
-import hashlib
 
 @dataclass
 class SubscriptionRecord:
@@ -44,7 +43,10 @@ OUT_OF_BAND_DISPATCH_LOG: dict[uuid.UUID, str] = {}
 
 def get_dispatched_challenge(subscription_id: str | uuid.UUID) -> str | None:
     """Retrieve simulated out-of-band challenge token for testing."""
-    sid = subscription_id if isinstance(subscription_id, uuid.UUID) else uuid.UUID(str(subscription_id))
+    if isinstance(subscription_id, uuid.UUID):
+        sid = subscription_id
+    else:
+        sid = uuid.UUID(str(subscription_id))
     return OUT_OF_BAND_DISPATCH_LOG.get(sid)
 
 
@@ -58,7 +60,7 @@ async def subscribe_notifications(
     tenant: VerifiedTenant = Depends(get_verified_tenant),
 ) -> NotificationSubscribeResponse:
     """Register a new notification preference requiring challenge verification.
-    
+
     The challenge token is dispatched out-of-band and NEVER returned in the response body.
     """
     now = datetime.now(tz=UTC)
@@ -121,7 +123,7 @@ async def verify_notification_subscription(
         )
 
     now = datetime.now(tz=UTC)
-    if now > record.expires_at:
+    if now >= record.expires_at:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Challenge verification token has expired",

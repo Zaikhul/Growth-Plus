@@ -25,11 +25,18 @@ class ConfigRightsAuthorizer:
 
     def __init__(
         self,
-        policies: Mapping[str, RightsPolicy] | None = None,
+        policies: Mapping[str | tuple[str, str], RightsPolicy] | None = None,
         source_enabled_flags: Mapping[str, bool] | None = None,
         disabled_reasons: Mapping[str, str] | None = None,
     ) -> None:
-        self._policies: dict[str, RightsPolicy] = dict(policies or {})
+        self._policies: dict[tuple[str, str], RightsPolicy] = {}
+        if policies:
+            for k, p in policies.items():
+                if isinstance(k, tuple):
+                    self._policies[k] = p
+                else:
+                    self._policies[(k, p.dataset_id)] = p
+                    self._policies[(k, "*")] = p
         self._enabled_flags: dict[str, bool] = dict(source_enabled_flags or {})
         self._disabled_reasons: dict[str, str] = dict(disabled_reasons or {})
 
@@ -51,7 +58,7 @@ class ConfigRightsAuthorizer:
         sources_cfg: dict[str, Any] = data.get("sources", {})
         enabled_flags: dict[str, bool] = {}
         disabled_reasons: dict[str, str] = {}
-        policies: dict[str, RightsPolicy] = {}
+        policies: dict[str | tuple[str, str], RightsPolicy] = {}
 
         now = datetime.now(UTC)
 
@@ -77,7 +84,8 @@ class ConfigRightsAuthorizer:
                         DataOperation.DISTRIBUTE_SIGNAL: EntitlementStatus.PERMITTED,
                     },
                 )
-                policies[source_id] = policy
+                policies[(source_id, "default")] = policy
+                policies[(source_id, "*")] = policy
 
         return cls(
             policies=policies,
@@ -90,14 +98,16 @@ class ConfigRightsAuthorizer:
         return self._enabled_flags.get(source_id, False)
 
     def register_policy(self, policy: RightsPolicy) -> None:
-        """Register or override a rights policy for a source."""
-        self._policies[policy.source_id] = policy
+        """Register or override a rights policy for a source and dataset."""
+        self._policies[(policy.source_id, policy.dataset_id)] = policy
+        self._policies[(policy.source_id, "*")] = policy
 
     def authorize(
         self,
         source_id: str,
         dataset_id: str,
         operation: DataOperation,
+        eval_time: datetime | None = None,
     ) -> RightsEvaluationResult:
         """Evaluate if operation on source/dataset is permitted."""
         if not self.is_source_enabled(source_id):
@@ -114,7 +124,11 @@ class ConfigRightsAuthorizer:
                 policy_id="config_defaults",
             )
 
-        policy = self._policies.get(source_id)
+        policy = (
+            self._policies.get((source_id, dataset_id))
+            or self._policies.get((source_id, "*"))
+            or self._policies.get((source_id, "default"))
+        )
         if policy is None:
             return RightsEvaluationResult(
                 allowed=False,
@@ -125,4 +139,4 @@ class ConfigRightsAuthorizer:
                 policy_id="missing_policy",
             )
 
-        return policy.evaluate(operation)
+        return policy.evaluate(operation, eval_time=eval_time)

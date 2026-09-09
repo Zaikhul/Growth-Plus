@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 import numpy as np
 
-from src.domain.errors import InvariantViolationError
+from src.domain.errors import EmptyPartitionError, InvariantViolationError
 from src.domain.features import PillarType, SourceCoverageMode
 from src.domain.identity import HorizonId
 from src.domain.predictions import ProbabilityVector
@@ -62,7 +62,7 @@ class TrainingPipeline:
         generation: int = 1,
         bundle_ttl_days: int = 30,
         ece_gate: float = 0.08,
-        strict_gate: bool = False,
+        strict_gate: bool = True,
         expert_configs: Mapping[PillarType, PillarExpertConfig] | None = None,
     ) -> PipelineResult:
         """Execute complete training pipeline across disjoint partitions."""
@@ -145,7 +145,11 @@ class TrainingPipeline:
                 and targets[int(i)].available_at < fusion_start
             )
         ]
-        idx_train = np.array(purged_train if purged_train else idx_train_raw)
+        if not purged_train:
+            raise EmptyPartitionError(
+                "Purged expert training partition (Partition 1) contains zero valid samples"
+            )
+        idx_train = np.array(purged_train)
 
         purged_fusion = [
             int(i)
@@ -154,14 +158,22 @@ class TrainingPipeline:
                 targets[int(i)].exit_at < calib_start and targets[int(i)].available_at < calib_start
             )
         ]
-        idx_fusion = np.array(purged_fusion if purged_fusion else idx_fusion_raw)
+        if not purged_fusion:
+            raise EmptyPartitionError(
+                "Purged fusion weight fitting partition (Partition 2) contains zero valid samples"
+            )
+        idx_fusion = np.array(purged_fusion)
 
         purged_calib = [
             int(i)
             for i in idx_calib_raw
             if (targets[int(i)].exit_at < eval_start and targets[int(i)].available_at < eval_start)
         ]
-        idx_calib = np.array(purged_calib if purged_calib else idx_calib_raw)
+        if not purged_calib:
+            raise EmptyPartitionError(
+                "Purged calibration fitting partition (Partition 3) contains zero valid samples"
+            )
+        idx_calib = np.array(purged_calib)
 
         # ------------------------------------------------------------------
         # 2. Train pillar experts on Partition 1

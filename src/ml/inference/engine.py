@@ -9,8 +9,9 @@ Enforces PRD Section 3.9, 3.10, 3.11, 4.6:
 
 import uuid
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
+from src.adapters.models.signature_verifier import SignedModelVerifier
 from src.domain.errors import InvariantViolationError
 from src.domain.features import FeatureSnapshot, PillarType
 from src.domain.identity import HorizonId
@@ -47,9 +48,14 @@ class InferenceEngine:
         self,
         bundle: ModelBundle,
         explanation_engine: ExplanationEngine | None = None,
+        verifier: SignedModelVerifier | None = None,
     ) -> None:
+        if verifier is not None:
+            now_utc = ensure_utc(datetime.now(tz=UTC))
+            verifier.verify_and_admit(bundle, current_time=now_utc)
         self._bundle = bundle
         self._explanation_engine = explanation_engine or ExplanationEngine()
+        self._verifier = verifier
         self._sequence: int = 0
 
     @property

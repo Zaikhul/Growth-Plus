@@ -108,6 +108,14 @@ class MacroObservationModel(Base):
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     raw_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     canonical_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_seasonally_adjusted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    source_record_key: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), default="macro_v1", nullable=False)
+    parser_version: Mapped[str] = mapped_column(String(32), default="parser_v1", nullable=False)
+    rights_policy_id: Mapped[str] = mapped_column(
+        String(64), default="rights_public", nullable=False
+    )
+    rights_version: Mapped[str] = mapped_column(String(32), default="v1", nullable=False)
 
 
 class EtfFlowObservationModel(Base):
@@ -126,13 +134,27 @@ class EtfFlowObservationModel(Base):
     record_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     asset_id: Mapped[str] = mapped_column(String(16), nullable=False)
     fund_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    ticker_at_time: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    issuer: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    jurisdiction: Mapped[str] = mapped_column(String(16), default="US", nullable=False)
     session_date: Mapped[date] = mapped_column(Date, nullable=False)
     flow_usd: Mapped[float] = mapped_column(Float, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     covered_funds: Mapped[int] = mapped_column(Integer, nullable=False)
     expected_funds: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_seed_or_conversion: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     revision_seq: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_digest: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    canonical_digest: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    source_id: Mapped[str] = mapped_column(String(64), default="farside", nullable=False)
+    source_record_key: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), default="flows_v1", nullable=False)
+    parser_version: Mapped[str] = mapped_column(String(32), default="parser_v1", nullable=False)
+    rights_policy_id: Mapped[str] = mapped_column(
+        String(64), default="rights_public", nullable=False
+    )
+    rights_version: Mapped[str] = mapped_column(String(32), default="v1", nullable=False)
 
 
 # ==============================================================================
@@ -159,6 +181,7 @@ class FeatureSnapshotModel(Base):
     scalars: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     active_pillars: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    lineage_record_ids: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
 
 
 class SignalModel(Base):
@@ -191,10 +214,16 @@ class SignalModel(Base):
     outcome_hurdle_log_return: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     cohort_reliability: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     model_bundle: Mapped[str] = mapped_column(String(128), default="", nullable=False)
-    policy_version: Mapped[str] = mapped_column(String(64), default="labels_1.0.0", nullable=False)
-    feature_set_version: Mapped[str] = mapped_column(String(64), default="features_1.0.0", nullable=False)
+    policy_version: Mapped[str] = mapped_column(
+        String(64), default="labels_1.0.0", nullable=False
+    )
+    feature_set_version: Mapped[str] = mapped_column(
+        String(64), default="features_1.0.0", nullable=False
+    )
     snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    rights_policy_version: Mapped[str] = mapped_column(String(64), default="rights_1.0.0", nullable=False)
+    rights_policy_version: Mapped[str] = mapped_column(
+        String(64), default="rights_1.0.0", nullable=False
+    )
     is_replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
@@ -259,44 +288,65 @@ class InboxModel(Base):
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class WatchlistModel(Base):
-    """User/tenant saved market watchlists."""
+# ==============================================================================
+# 5. Tenant Domain Models (Row-Level Security)
+# ==============================================================================
+
+
+class TenantWatchlistModel(Base):
+    """Tenant saved market watchlists with PostgreSQL Row-Level Security."""
 
     __tablename__ = "watchlists"
     __table_args__ = (
         PrimaryKeyConstraint("id"),
-        Index("idx_watchlists_tenant", "tenant_id"),
-        {"schema": "ops"},
+        Index("idx_tenant_watchlists_tenant", "tenant_id"),
+        {"schema": "tenant"},
     )
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
     markets: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
 
 
-class AlertRuleModel(Base):
-    """User/tenant alert rules and notification subscriptions."""
+class TenantAlertRuleModel(Base):
+    """Tenant alert rules and notification subscriptions with PostgreSQL Row-Level Security."""
 
     __tablename__ = "alert_rules"
     __table_args__ = (
         PrimaryKeyConstraint("id"),
-        Index("idx_alert_rules_tenant", "tenant_id"),
-        {"schema": "ops"},
+        Index("idx_tenant_alert_rules_tenant", "tenant_id"),
+        {"schema": "tenant"},
     )
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
-    markets: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    horizons: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    labels: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    min_confidence: Mapped[float] = mapped_column(Float, default=0.6, nullable=False)
-    cooldown_seconds: Mapped[int] = mapped_column(Integer, default=900, nullable=False)
-    target_channels: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    destination: Mapped[str] = mapped_column(String(2048), nullable=False)
-    destination_status: Mapped[str] = mapped_column(String(32), default="PENDING_VERIFICATION", nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    specification: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    consent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+
+
+class TenantNotificationDeliveryModel(Base):
+    """Tenant notification deliveries with PostgreSQL Row-Level Security."""
+
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (
+        PrimaryKeyConstraint("id"),
+        Index("idx_tenant_deliveries_tenant", "tenant_id"),
+        {"schema": "tenant"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    rule_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    signal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# Legacy model aliases
+WatchlistModel = TenantWatchlistModel
+AlertRuleModel = TenantAlertRuleModel

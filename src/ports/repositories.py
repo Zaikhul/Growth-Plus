@@ -2,6 +2,7 @@
 
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -178,3 +179,86 @@ class InboxRepository(Protocol):
     async def mark_processed(self, consumer_name: str, event_id: uuid.UUID) -> bool:
         """Record event processing. Returns True if recorded, False if duplicate."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class TenantWatchlist:
+    """Tenant saved market watchlist."""
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    name: str
+    markets: Sequence[str]
+    version: int = 1
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TenantAlertRule:
+    """Tenant alert rule and notification subscription."""
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    name: str
+    markets: Sequence[str]
+    horizons: Sequence[str]
+    labels: Sequence[str]
+    min_confidence: float = 0.60
+    cooldown_seconds: int = 900
+    target_channels: Sequence[str] = ("webhook",)
+    destination: str = ""
+    destination_status: str = "PENDING_VERIFICATION"
+    is_active: bool = True
+    consent_at: datetime | None = None
+    version: int = 1
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class WatchlistRepository(Protocol):
+    """Port for tenant market watchlists persistence."""
+
+    async def list_by_tenant(self, tenant_id: uuid.UUID) -> Sequence[TenantWatchlist]:
+        """Fetch all watchlists owned by tenant."""
+        ...
+
+    async def get_by_id(
+        self, tenant_id: uuid.UUID, watchlist_id: uuid.UUID
+    ) -> TenantWatchlist | None:
+        """Fetch watchlist by ID scoped to tenant."""
+        ...
+
+    async def save(
+        self, watchlist: TenantWatchlist, expected_version: int | None = None
+    ) -> TenantWatchlist:
+        """Create or update watchlist with optimistic locking check."""
+        ...
+
+    async def delete(self, tenant_id: uuid.UUID, watchlist_id: uuid.UUID) -> bool:
+        """Delete watchlist scoped to tenant. Returns True if deleted."""
+        ...
+
+
+class AlertRuleRepository(Protocol):
+    """Port for tenant alert rules persistence."""
+
+    async def list_by_tenant(self, tenant_id: uuid.UUID) -> Sequence[TenantAlertRule]:
+        """Fetch all alert rules owned by tenant."""
+        ...
+
+    async def get_by_id(
+        self, tenant_id: uuid.UUID, rule_id: uuid.UUID
+    ) -> TenantAlertRule | None:
+        """Fetch alert rule by ID scoped to tenant."""
+        ...
+
+    async def save(
+        self, rule: TenantAlertRule, expected_version: int | None = None
+    ) -> TenantAlertRule:
+        """Create or update alert rule with optimistic locking check."""
+        ...
+
+    async def delete(self, tenant_id: uuid.UUID, rule_id: uuid.UUID) -> bool:
+        """Delete alert rule scoped to tenant. Returns True if deleted."""
+        ...
+

@@ -6,18 +6,25 @@ Enforces PRD Section 4.1, 4.2 & 4.5:
 - Structured RFC 7807 Problem Details error responses
 """
 
-from collections.abc import AsyncGenerator
+import uuid
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 from src.adapters.messaging.in_memory import InMemoryEventBus
 from src.adapters.persistence.in_memory.repositories import (
     InMemoryBarRepository,
     InMemoryObservationRepository,
     InMemorySignalRepository,
+)
+from src.adapters.persistence.in_memory.tenant_repositories import (
+    InMemoryAlertRuleRepository,
+    InMemoryWatchlistRepository,
 )
 from src.adapters.rights.config_authorizer import ConfigRightsAuthorizer
 from src.api.middleware.rate_limit import RateLimitMiddleware
@@ -40,7 +47,13 @@ from src.domain.errors import (
     StaleDataError,
 )
 from src.ports.event_bus import EventBus
-from src.ports.repositories import BarRepository, ObservationRepository, SignalRepository
+from src.ports.repositories import (
+    AlertRuleRepository,
+    BarRepository,
+    ObservationRepository,
+    SignalRepository,
+    WatchlistRepository,
+)
 from src.ports.rights_authorizer import RightsAuthorizer
 
 
@@ -61,6 +74,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.bar_repository = InMemoryBarRepository()
     if not hasattr(app.state, "observation_repository"):
         app.state.observation_repository = InMemoryObservationRepository()
+    if not hasattr(app.state, "watchlist_repository"):
+        app.state.watchlist_repository = InMemoryWatchlistRepository()
+    if not hasattr(app.state, "alert_rule_repository"):
+        app.state.alert_rule_repository = InMemoryAlertRuleRepository()
     if not hasattr(app.state, "event_bus"):
         app.state.event_bus = InMemoryEventBus()
     if not hasattr(app.state, "rights_authorizer"):
@@ -77,6 +94,8 @@ def create_app(
     signal_repo: SignalRepository | None = None,
     bar_repo: BarRepository | None = None,
     obs_repo: ObservationRepository | None = None,
+    watchlist_repo: WatchlistRepository | None = None,
+    alert_rule_repo: AlertRuleRepository | None = None,
     event_bus: EventBus | None = None,
     rights_authorizer: RightsAuthorizer | None = None,
     settings: Settings | None = None,
@@ -103,6 +122,10 @@ def create_app(
             missing.append("bar_repo")
         if obs_repo is None:
             missing.append("obs_repo")
+        if watchlist_repo is None:
+            missing.append("watchlist_repo")
+        if alert_rule_repo is None:
+            missing.append("alert_rule_repo")
         if event_bus is None:
             missing.append("event_bus")
         if missing:
@@ -124,6 +147,8 @@ def create_app(
     app.state.signal_repository = signal_repo or InMemorySignalRepository()
     app.state.bar_repository = bar_repo or InMemoryBarRepository()
     app.state.observation_repository = obs_repo or InMemoryObservationRepository()
+    app.state.watchlist_repository = watchlist_repo or InMemoryWatchlistRepository()
+    app.state.alert_rule_repository = alert_rule_repo or InMemoryAlertRuleRepository()
     app.state.event_bus = event_bus or InMemoryEventBus()
     app.state.rights_authorizer = rights_authorizer or ConfigRightsAuthorizer.from_yaml_file(
         cfg.app.config_path
@@ -168,25 +193,57 @@ def create_app(
     app.include_router(alert_rules.router)
     app.include_router(watchlists.router)
 
+    # Correlation ID Middleware
+    @app.middleware("http")
+    async def correlation_id_middleware(
+        request: Request, call_next: Callable[[Request], Any]
+    ) -> Response:
+        corr_id = (
+            request.headers.get("x-correlation-id")
+            or request.headers.get("x-request-id")
+            or str(uuid.uuid4())
+        )
+        if len(corr_id) > 64 or not corr_id.replace("-", "").isalnum():
+            corr_id = str(uuid.uuid4())
+        request.state.correlation_id = corr_id
+        response: Response = await call_next(request)
+        response.headers["x-correlation-id"] = corr_id
+        return response
+
+    def _get_correlation_id(req: Request) -> str:
+        return (
+            getattr(req.state, "correlation_id", None)
+            or req.headers.get("x-correlation-id")
+            or req.headers.get("x-request-id")
+            or str(uuid.uuid4())
+        )
+
     # RFC 7807 Error Handlers
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        corr_id = _get_correlation_id(request)
+        headers = dict(exc.headers or {})
+        headers["x-correlation-id"] = corr_id
         if isinstance(exc.detail, dict):
-            return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=exc.headers)
+            content = dict(exc.detail)
+            content.setdefault("correlation_id", corr_id)
+            return JSONResponse(status_code=exc.status_code, content=content, headers=headers)
         return JSONResponse(
             status_code=exc.status_code,
             content={
                 "type": "https://errors.growthplus.ai/http-error",
-                "title": exc.detail or "HTTP Error",
+                "title": str(exc.detail) if exc.detail else "HTTP Error",
                 "status": exc.status_code,
                 "detail": str(exc.detail),
                 "instance": str(request.url.path),
+                "correlation_id": corr_id,
             },
-            headers=exc.headers,
+            headers=headers,
         )
 
     @app.exception_handler(RightsViolationError)
     async def rights_violation_handler(request: Request, exc: RightsViolationError) -> JSONResponse:
+        corr_id = _get_correlation_id(request)
         return JSONResponse(
             status_code=403,
             content={
@@ -195,11 +252,14 @@ def create_app(
                 "status": 403,
                 "detail": exc.message,
                 "instance": str(request.url.path),
+                "correlation_id": corr_id,
             },
+            headers={"x-correlation-id": corr_id},
         )
 
     @app.exception_handler(SecurityError)
     async def security_error_handler(request: Request, exc: SecurityError) -> JSONResponse:
+        corr_id = _get_correlation_id(request)
         return JSONResponse(
             status_code=403,
             content={
@@ -208,13 +268,16 @@ def create_app(
                 "status": 403,
                 "detail": exc.message,
                 "instance": str(request.url.path),
+                "correlation_id": corr_id,
             },
+            headers={"x-correlation-id": corr_id},
         )
 
     @app.exception_handler(PointInTimeViolationError)
     async def pit_violation_handler(
         request: Request, exc: PointInTimeViolationError
     ) -> JSONResponse:
+        corr_id = _get_correlation_id(request)
         return JSONResponse(
             status_code=400,
             content={
@@ -223,11 +286,14 @@ def create_app(
                 "status": 400,
                 "detail": exc.message,
                 "instance": str(request.url.path),
+                "correlation_id": corr_id,
             },
+            headers={"x-correlation-id": corr_id},
         )
 
     @app.exception_handler(StaleDataError)
     async def stale_data_handler(request: Request, exc: StaleDataError) -> JSONResponse:
+        corr_id = _get_correlation_id(request)
         return JSONResponse(
             status_code=422,
             content={
@@ -236,13 +302,16 @@ def create_app(
                 "status": 422,
                 "detail": exc.message,
                 "instance": str(request.url.path),
+                "correlation_id": corr_id,
             },
+            headers={"x-correlation-id": corr_id},
         )
 
     @app.exception_handler(InvariantViolationError)
     async def invariant_violation_handler(
         request: Request, exc: InvariantViolationError
     ) -> JSONResponse:
+        corr_id = _get_correlation_id(request)
         return JSONResponse(
             status_code=422,
             content={
@@ -251,7 +320,25 @@ def create_app(
                 "status": 422,
                 "detail": exc.message,
                 "instance": str(request.url.path),
+                "correlation_id": corr_id,
             },
+            headers={"x-correlation-id": corr_id},
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        corr_id = _get_correlation_id(request)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "type": "https://errors.growthplus.ai/internal-error",
+                "title": "Internal Server Error",
+                "status": 500,
+                "detail": "An internal error occurred while processing the request.",
+                "instance": str(request.url.path),
+                "correlation_id": corr_id,
+            },
+            headers={"x-correlation-id": corr_id},
         )
 
     return app

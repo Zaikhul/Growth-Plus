@@ -8,10 +8,11 @@ without affirmative commercial entitlement. UNKNOWN denies the operation.
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from src.domain.errors import RightsViolationError
+from src.domain.time import ensure_utc
 
 
 class DataOperation(StrEnum):
@@ -78,11 +79,36 @@ class RightsPolicy:
     entitlements: Mapping[DataOperation, EntitlementStatus] = field(default_factory=dict)
     rationale: str = ""
 
-    def evaluate(self, operation: DataOperation) -> RightsEvaluationResult:
+    def evaluate(
+        self,
+        operation: DataOperation,
+        eval_time: datetime | None = None,
+    ) -> RightsEvaluationResult:
         """Evaluate an operation against this policy.
 
         Strict rule: If the operation is not present or is UNKNOWN, deny it.
+        Also verifies effective_from and effective_to time bounds.
         """
+        check_time = ensure_utc(eval_time) if eval_time is not None else datetime.now(tz=UTC)
+        if check_time < ensure_utc(self.effective_from):
+            return RightsEvaluationResult(
+                allowed=False,
+                operation=operation,
+                source_id=self.source_id,
+                dataset_id=self.dataset_id,
+                reason_code=f"POLICY_NOT_YET_EFFECTIVE: Starts {self.effective_from.isoformat()}",
+                policy_id=self.policy_id,
+            )
+        if self.effective_to is not None and check_time >= ensure_utc(self.effective_to):
+            return RightsEvaluationResult(
+                allowed=False,
+                operation=operation,
+                source_id=self.source_id,
+                dataset_id=self.dataset_id,
+                reason_code=f"POLICY_EXPIRED: Ended {self.effective_to.isoformat()}",
+                policy_id=self.policy_id,
+            )
+
         status = self.entitlements.get(operation, EntitlementStatus.UNKNOWN)
         if status == EntitlementStatus.PERMITTED:
             return RightsEvaluationResult(

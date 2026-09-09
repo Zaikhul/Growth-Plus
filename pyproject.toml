@@ -27,6 +27,7 @@ dependencies = [
     "xgboost>=2.1.0",
     "pyyaml>=6.0.1",
     "python-dotenv>=1.0.1",
+    "scipy>=1.13.0",
     "TA-Lib==0.7.1",
 ]
 

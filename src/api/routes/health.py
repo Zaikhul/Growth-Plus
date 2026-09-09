@@ -9,12 +9,16 @@ router = APIRouter(tags=["Health"])
 
 
 @router.get("/healthz")
+@router.get("/health")
+@router.get("/health/liveness")
 async def health_check() -> dict[str, str]:
     """Kubernetes liveness probe confirming process is responsive."""
     return {"status": "OK"}
 
 
 @router.get("/readyz")
+@router.get("/health/readiness")
+@router.get("/health/ready")
 async def readiness_check(request: Request, response: Response) -> dict[str, Any]:
     """Kubernetes readiness probe confirming downstream dependencies are operational."""
     db_connected = False

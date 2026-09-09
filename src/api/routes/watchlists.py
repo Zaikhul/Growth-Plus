@@ -2,12 +2,16 @@
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import VerifiedTenant, get_verified_tenant
+from src.api.dependencies import (
+    VerifiedTenant,
+    get_verified_tenant,
+    get_watchlist_repository,
+)
+from src.ports.repositories import TenantWatchlist, WatchlistRepository
 
 router = APIRouter(prefix="/v1/watchlists", tags=["Watchlists"])
 
@@ -25,37 +29,51 @@ class WatchlistCreateRequest(BaseModel):
     markets: list[str] = Field(default_factory=list, max_length=20)
 
 
-# In-memory storage by tenant for non-persistent mode, or fallback repository
-WATCHLIST_STORE: dict[str, dict[str, Any]] = {}
-
-
 @router.get("", response_model=list[WatchlistDTO])
 async def list_watchlists(
     tenant: VerifiedTenant = Depends(get_verified_tenant),
+    repo: WatchlistRepository = Depends(get_watchlist_repository),
 ) -> list[WatchlistDTO]:
     """Retrieve all watchlists owned by the authenticated tenant."""
-    tenant_str = str(tenant.tenant_id)
-    items = [
-        WatchlistDTO(**data)
-        for data in WATCHLIST_STORE.values()
-        if data.get("tenant_id") == tenant_str
-    ]
+    items = await repo.list_by_tenant(tenant.tenant_id)
     if not items:
         # Provide default institutional watchlist if none created yet
-        default_wl = WatchlistDTO(
-            id=f"wl-{tenant_str[:8]}",
+        now = datetime.now(tz=UTC)
+        default_id = uuid.uuid5(tenant.tenant_id, "core-institutional-spot")
+        default_wl = TenantWatchlist(
+            id=default_id,
+            tenant_id=tenant.tenant_id,
             name="Core Institutional Spot",
             markets=["binance:BTCUSDT", "binance:ETHUSDT", "coinbase:BTC-USD"],
-            updated_at=datetime.now(tz=UTC),
+            version=1,
+            updated_at=now,
         )
-        return [default_wl]
-    return items
+        await repo.save(default_wl)
+        return [
+            WatchlistDTO(
+                id=str(default_wl.id),
+                name=default_wl.name,
+                markets=list(default_wl.markets),
+                updated_at=now,
+            )
+        ]
+
+    return [
+        WatchlistDTO(
+            id=str(item.id),
+            name=item.name,
+            markets=list(item.markets),
+            updated_at=item.updated_at or datetime.now(tz=UTC),
+        )
+        for item in items
+    ]
 
 
 @router.post("", response_model=WatchlistDTO, status_code=status.HTTP_201_CREATED)
 async def create_or_update_watchlist(
     payload: WatchlistCreateRequest,
     tenant: VerifiedTenant = Depends(get_verified_tenant),
+    repo: WatchlistRepository = Depends(get_watchlist_repository),
 ) -> WatchlistDTO:
     """Create or overwrite a tenant market watchlist (maximum 20 markets)."""
     if len(payload.markets) > 20:
@@ -64,21 +82,31 @@ async def create_or_update_watchlist(
             detail="Maximum 20 markets per watchlist reached (PRD §4.10)",
         )
 
-    wl_id = payload.id or f"wl-{uuid.uuid4()}"
+    wl_id: uuid.UUID
+    if payload.id:
+        try:
+            wl_id = uuid.UUID(payload.id)
+        except ValueError:
+            wl_id = uuid.uuid5(tenant.tenant_id, payload.id)
+    else:
+        wl_id = uuid.uuid4()
+
     now = datetime.now(tz=UTC)
-    record = {
-        "id": wl_id,
-        "tenant_id": str(tenant.tenant_id),
-        "name": payload.name,
-        "markets": payload.markets,
-        "updated_at": now,
-    }
-    WATCHLIST_STORE[wl_id] = record
-    return WatchlistDTO(
+    entity = TenantWatchlist(
         id=wl_id,
+        tenant_id=tenant.tenant_id,
         name=payload.name,
         markets=payload.markets,
+        version=1,
         updated_at=now,
+    )
+    saved = await repo.save(entity)
+
+    return WatchlistDTO(
+        id=str(saved.id),
+        name=saved.name,
+        markets=list(saved.markets),
+        updated_at=saved.updated_at or now,
     )
 
 
@@ -86,12 +114,17 @@ async def create_or_update_watchlist(
 async def delete_watchlist(
     watchlist_id: str,
     tenant: VerifiedTenant = Depends(get_verified_tenant),
+    repo: WatchlistRepository = Depends(get_watchlist_repository),
 ) -> None:
     """Delete a watchlist owned by the authenticated tenant."""
-    record = WATCHLIST_STORE.get(watchlist_id)
-    if record is None or record.get("tenant_id") != str(tenant.tenant_id):
+    try:
+        wl_uuid = uuid.UUID(watchlist_id)
+    except ValueError:
+        wl_uuid = uuid.uuid5(tenant.tenant_id, watchlist_id)
+
+    deleted = await repo.delete(tenant.tenant_id, wl_uuid)
+    if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Watchlist '{watchlist_id}' not found",
         )
-    del WATCHLIST_STORE[watchlist_id]

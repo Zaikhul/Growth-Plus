@@ -50,7 +50,8 @@ def require_public(value: str) -> None:
     effective = address.ipv4_mapped if isinstance(address, ipaddress.IPv6Address) else None
     candidate = effective or address
     if (
-        not candidate.is_global
+        candidate.is_private
+        or not candidate.is_global
         or candidate.is_multicast
         or candidate.is_loopback
         or candidate.is_link_local
